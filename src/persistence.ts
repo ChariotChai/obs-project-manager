@@ -254,6 +254,7 @@ export class Persistence {
       createdAt: ts(fm.createdAt, file.stat.ctime),
       updatedAt: ts(fm.updatedAt, file.stat.mtime),
       description: str(fm.description),
+      members: asStrings(fm.members),
     };
   }
 
@@ -265,10 +266,28 @@ export class Persistence {
       if (parsed) return parsed;
     }
     const now = Date.now();
-    const fm: FM = { kind: "solution", id: genId("sol-"), name, createdAt: now, updatedAt: now };
+    const fm: FM = { kind: "solution", id: genId("sol-"), name, createdAt: now, updatedAt: now, members: [] };
     await this.writeFile(filePath, fm, `# ${name}\n\nSolution workspace.`);
     const file = this.app.vault.getAbstractFileByPath(normalizePath(filePath)) as TFile;
     return this.parseSolution(file, slug)!;
+  }
+
+  async updateSolution(solution: Solution, patch: Partial<Solution>): Promise<Solution> {
+    const next: Solution = { ...solution, ...patch, updatedAt: Date.now() };
+    await this.writeFile(solution.path, this.solutionFM(next), `# ${next.name}`);
+    return next;
+  }
+
+  private solutionFM(s: Solution): FM {
+    return {
+      kind: "solution",
+      id: s.id,
+      name: s.name,
+      createdAt: s.createdAt,
+      updatedAt: s.updatedAt,
+      description: s.description,
+      members: s.members,
+    };
   }
 
   // ---- Loading ----

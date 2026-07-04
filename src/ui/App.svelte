@@ -59,6 +59,9 @@
     </nav>
 
     <div class="topbar-actions">
+      <button class="ghost" on:click={() => store.openEditor({ mode: "edit", kind: "solution", entity: $model.solution })} title="Solution settings">
+        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19.14 12.94a2 2 0 0 0-1.41-1.41l-5.96-.94a6.96 6.96 0 0 0-1.21 1.21l-.94 5.96a2 2 0 0 0 1.41 1.41l5.96.94a6.96 6.96 0 0 0 1.21-1.21l.94-5.96zM12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6 6 2.69 6 6-2.69 6-6 6z"/></svg>
+      </button>
       {#if $tab === "overview"}
         <button class="primary" on:click={() => store.openEditor({ mode: "create", kind: "project" })}>+ New project</button>
       {:else if $tab === "requirements"}
@@ -211,6 +214,19 @@
   }
   .primary:hover {
     background: #006fe8;
+  }
+  .ghost {
+    background: transparent;
+    border: none;
+    color: var(--pm-muted, #8e8e93);
+    padding: 7px;
+    border-radius: 9px;
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s;
+  }
+  .ghost:hover {
+    color: var(--pm-text, #1d1d1f);
+    background: var(--pm-col, rgba(0, 0, 0, 0.05));
   }
   .body {
     flex: 1;

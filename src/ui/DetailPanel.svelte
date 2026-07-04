@@ -126,7 +126,12 @@
         <span class="lbl">Owner</span>
         <div class="val">
           {#if selectedTask.owner}<Avatar name={selectedTask.owner} size={18} />{/if}
-          <input class="inline" value={selectedTask.owner ?? ""} placeholder="Unassigned" on:change={(e) => update({ owner: field(e) || undefined })} />
+          <select class="inline" value={selectedTask.owner ?? ""} on:change={(e) => update({ owner: field(e) || undefined })}>
+            <option value="">—</option>
+            {#each $model.solution.members as m}
+              <option value={m}>{m}</option>
+            {/each}
+          </select>
         </div>
       </div>
       <div class="d-row">
@@ -191,7 +196,12 @@
     <div class="d-section">
       <div class="d-row">
         <span class="lbl">Owner</span>
-        <input class="inline" value={selectedProject.owner ?? ""} placeholder="Owner" on:change={(e) => update({ owner: field(e) || undefined })} />
+        <select class="inline" value={selectedProject.owner ?? ""} on:change={(e) => update({ owner: field(e) || undefined })}>
+          <option value="">—</option>
+          {#each $model.solution.members as m}
+            <option value={m}>{m}</option>
+          {/each}
+        </select>
       </div>
       <div class="d-row">
         <span class="lbl">Status</span>
@@ -234,7 +244,12 @@
     <div class="d-section">
       <div class="d-row">
         <span class="lbl">Owner</span>
-        <input class="inline" value={selectedTarget.owner ?? ""} placeholder="Owner" on:change={(e) => update({ owner: field(e) || undefined })} />
+        <select class="inline" value={selectedTarget.owner ?? ""} on:change={(e) => update({ owner: field(e) || undefined })}>
+          <option value="">—</option>
+          {#each $model.solution.members as m}
+            <option value={m}>{m}</option>
+          {/each}
+        </select>
       </div>
       <div class="d-row">
         <span class="lbl">Status</span>

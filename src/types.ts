@@ -60,6 +60,7 @@ export interface BaseEntity {
 
 export interface Solution extends BaseEntity {
   kind: "solution";
+  members: string[];
 }
 
 export interface Project extends BaseEntity {

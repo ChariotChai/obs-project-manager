@@ -25,7 +25,7 @@ export interface Selection {
 
 export type ViewTab = "overview" | "timeline" | "board" | "requirements";
 
-export type EditorKind = "project" | "target" | "task" | "requirement";
+export type EditorKind = "solution" | "project" | "target" | "task" | "requirement";
 export interface EditorState {
   mode: "create" | "edit";
   kind: EditorKind;
@@ -353,6 +353,12 @@ export class PmStore extends Events {
     else if (kind === "requirement") entity = m.requirements.find((r) => r.id === id);
     else if (kind === "solution") entity = m.solution;
     if (entity) await this.persistence.openFile(entity.path);
+  }
+
+  async updateSolution(patch: Partial<Solution>): Promise<void> {
+    const m = get(this.model);
+    const next = await this.persistence.updateSolution(m.solution, patch);
+    this.model.update((mm) => ({ ...mm, solution: next }));
   }
 }
 
