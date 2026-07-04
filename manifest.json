@@ -1,0 +1,10 @@
+{
+  "id": "project-manager",
+  "name": "Project Manager",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "Manage Solutions, Projects, Targets and Tasks with a requirement pool, timeline and Jira links.",
+  "author": "obs-project-manager",
+  "authorUrl": "",
+  "isDesktopOnly": false
+}
