@@ -537,6 +537,7 @@ export class Persistence {
     endDate?: string;
     status?: TargetStatus;
     description?: string;
+    dependencies?: string[];
   }): Promise<Target> {
     const { solSlug, projSlug } = this.splitProjectPath(input.project.path);
     const tSlug = this.uniqueTargetSlug(solSlug, projSlug, input.name);
@@ -552,7 +553,7 @@ export class Persistence {
       startDate: input.startDate,
       endDate: input.endDate,
       status: input.status ?? "planning",
-      dependencies: [],
+      dependencies: input.dependencies ?? [],
       color: input.project.color,
       createdAt: now,
       updatedAt: now,

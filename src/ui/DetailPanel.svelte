@@ -118,77 +118,156 @@
     };
   }
 
-  /** Compute a layered layout for the target dependency graph. */
-  function targetGraphLayout(targets: Target[]) {
-    const byId = new Map(targets.map((t) => [t.id, t]));
-    const layers = new Map<string, number>();
-    for (const t of targets) layers.set(t.id, 0);
-    let changed = true;
-    let guard = 0;
-    while (changed && guard++ < targets.length + 5) {
-      changed = false;
-      for (const t of targets) {
-        let maxDep = -1;
-        for (const d of t.dependencies) {
-          if (layers.has(d)) maxDep = Math.max(maxDep, layers.get(d)!);
-        }
-        const want = maxDep + 1;
-        if (want > (layers.get(t.id) ?? 0)) {
-          layers.set(t.id, want);
-          changed = true;
-        }
-      }
+  // ---- Target Gantt + dependency graph (combined timeline + dep arrows) ----
+  const DAY_PX = 22; // px per day
+  const ROW_H = 48;  // px per row
+  const LABEL_W = 168;
+
+  let rowOrder: string[] = [];
+  let dragId: string | null = null;
+  let hoveredId: string | null = null;
+
+  // Targets for the currently-selected project (memoised for the graph).
+  $: pTargetsForGraph = selectedProject ? projectTargets(selectedProject.id) : [];
+
+  // Keep row order in sync: preserve existing ordering, append new targets.
+  $: rowOrder = (() => {
+    const ids = pTargetsForGraph.map((t) => t.id);
+    const kept = rowOrder.filter((id) => ids.includes(id));
+    const added = ids.filter((id) => !kept.includes(id));
+    return [...kept, ...added];
+  })();
+
+  function toTime(d: string): number {
+    const t = new Date(d + "T00:00:00").getTime();
+    return Number.isFinite(t) ? t : NaN;
+  }
+  function floorToDay(t: number): number {
+    const d = new Date(t);
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  }
+  function ceilToDay(t: number): number {
+    const d = new Date(t);
+    d.setHours(24, 0, 0, 0);
+    return d.getTime();
+  }
+
+  $: ganttRange = (() => {
+    let min = Infinity;
+    let max = -Infinity;
+    if (selectedProject?.startDate) min = Math.min(min, toTime(selectedProject.startDate));
+    if (selectedProject?.endDate) max = Math.max(max, toTime(selectedProject.endDate));
+    for (const t of pTargetsForGraph) {
+      if (t.startDate) { const s = toTime(t.startDate); if (Number.isFinite(s) && s < min) min = s; }
+      if (t.endDate) { const e = toTime(t.endDate); if (Number.isFinite(e) && e > max) max = e; }
     }
-    // group by layer
-    const byLayer = new Map<number, Target[]>();
-    for (const t of targets) {
-      const l = layers.get(t.id) ?? 0;
-      if (!byLayer.has(l)) byLayer.set(l, []);
-      byLayer.get(l)!.push(t);
+    if (!Number.isFinite(min) || !Number.isFinite(max)) {
+      const now = Date.now();
+      min = now - 7 * 86400000;
+      max = now + 21 * 86400000;
     }
-    const layerCount = Math.max(1, byLayer.size);
-    const nodeW = 150;
-    const nodeH = 44;
-    const colGap = 70;
-    const rowGap = 18;
-    const positions = new Map<string, { x: number; y: number; layer: number }>();
-    let maxRows = 1;
-    for (let l = 0; l < layerCount; l++) {
-      const nodes = byLayer.get(l) ?? [];
-      maxRows = Math.max(maxRows, nodes.length);
+    min = floorToDay(min) - 2 * 86400000;
+    max = ceilToDay(max) + 2 * 86400000;
+    return { min, max, days: Math.max(1, Math.round((max - min) / 86400000)) };
+  })();
+
+  $: ganttWidth = ganttRange.days * DAY_PX;
+
+  // Per-target bar position { x, width } in pixels.
+  $: barPositions = (() => {
+    const map = new Map<string, { x: number; width: number }>();
+    for (const t of pTargetsForGraph) {
+      const s = t.startDate ? toTime(t.startDate) : t.endDate ? toTime(t.endDate) - 86400000 : ganttRange.min;
+      const e = t.endDate ? toTime(t.endDate) : t.startDate ? toTime(t.startDate) + 86400000 : ganttRange.min + 7 * 86400000;
+      const x = Math.max(0, ((s - ganttRange.min) / 86400000) * DAY_PX);
+      const width = Math.max(DAY_PX * 3, ((e - s) / 86400000) * DAY_PX);
+      map.set(t.id, { x, width });
     }
-    for (let l = 0; l < layerCount; l++) {
-      const nodes = byLayer.get(l) ?? [];
-      const colRows = Math.max(maxRows, nodes.length);
-      nodes.forEach((t, i) => {
-        const x = l * (nodeW + colGap);
-        // centre each column vertically
-        const totalH = colRows * nodeH + (colRows - 1) * rowGap;
-        const startY = 0;
-        const y = startY + i * (nodeH + rowGap) + (totalH - (nodes.length * nodeH + (nodes.length - 1) * rowGap)) / 2;
-        positions.set(t.id, { x, y, layer: l });
+    return map;
+  })();
+
+  $: ganttMonths = (() => {
+    const months: { label: string; left: number; width: number }[] = [];
+    let cursor = ganttRange.min;
+    while (cursor < ganttRange.max) {
+      const d = new Date(cursor);
+      const monthStart = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
+      const next = new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime();
+      const start = Math.max(cursor, monthStart);
+      const end = Math.min(ganttRange.max, next);
+      months.push({
+        label: d.toLocaleDateString(undefined, { month: "short", year: "numeric" }),
+        left: ((start - ganttRange.min) / 86400000) * DAY_PX,
+        width: ((end - start) / 86400000) * DAY_PX,
       });
+      cursor = next;
     }
-    const edges: { from: string; to: string; fromX: number; fromY: number; toX: number; toY: number }[] = [];
-    for (const t of targets) {
-      const fromPos = positions.get(t.id);
-      if (!fromPos) continue;
+    return months;
+  })();
+
+  $: todayLeft = ((floorToDay(Date.now()) - ganttRange.min) / 86400000) * DAY_PX;
+  $: ganttHeight = rowOrder.length * ROW_H;
+
+  // Dependency arrows: dep bar right-edge → dependent bar left-edge.
+  $: ganttArrows = (() => {
+    const arrows: { fromX: number; fromY: number; toX: number; toY: number; key: string }[] = [];
+    for (const t of pTargetsForGraph) {
+      const ti = rowOrder.indexOf(t.id);
+      if (ti < 0) continue;
+      const tp = barPositions.get(t.id);
+      if (!tp) continue;
       for (const depId of t.dependencies) {
-        const toPos = positions.get(depId);
-        if (!toPos) continue;
-        edges.push({
-          from: depId,
-          to: t.id,
-          fromX: toPos.x + nodeW,
-          fromY: toPos.y + nodeH / 2,
-          toX: fromPos.x,
-          toY: fromPos.y + nodeH / 2,
+        const di = rowOrder.indexOf(depId);
+        if (di < 0) continue;
+        const dp = barPositions.get(depId);
+        if (!dp) continue;
+        arrows.push({
+          fromX: dp.x + dp.width,
+          fromY: di * ROW_H + ROW_H / 2,
+          toX: tp.x,
+          toY: ti * ROW_H + ROW_H / 2,
+          key: depId + "->" + t.id,
         });
       }
     }
-    const width = layerCount * nodeW + (layerCount - 1) * colGap;
-    const height = maxRows * nodeH + (maxRows - 1) * rowGap;
-    return { positions, edges, width: Math.max(width, 200), height: Math.max(height, nodeH), nodeW, nodeH };
+    return arrows;
+  })();
+
+  function onRowDragStart(e: DragEvent, id: string) {
+    dragId = id;
+    e.dataTransfer?.setData("text/plain", id);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+  }
+  function onRowDragOver(e: DragEvent, id: string) {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+  }
+  function onRowDrop(e: DragEvent, id: string) {
+    e.preventDefault();
+    const from = dragId ?? e.dataTransfer?.getData("text/plain") ?? null;
+    dragId = null;
+    if (from && from !== id) {
+      const fromIdx = rowOrder.indexOf(from);
+      const toIdx = rowOrder.indexOf(id);
+      if (fromIdx >= 0 && toIdx >= 0) {
+        const next = [...rowOrder];
+        next.splice(fromIdx, 1);
+        next.splice(toIdx, 0, from);
+        rowOrder = next;
+      }
+    }
+  }
+
+  /** Task stats for a target, used in the bar tooltip. */
+  function targetStats(targetId: string): { total: number; done: number; blocked: number; inProgress: number } {
+    const ts = $model.tasks.filter((k) => k.targetId === targetId);
+    return {
+      total: ts.length,
+      done: ts.filter((k) => k.status === "done").length,
+      blocked: ts.filter((k) => k.status === "blocked").length,
+      inProgress: ts.filter((k) => k.status === "in-progress").length,
+    };
   }
 
   function targetName(id: string): string {
@@ -341,8 +420,6 @@
     </div>
 
     {@const pTargets = projectTargets(selectedProject.id)}
-    {@const pGraph = targetGraphLayout(pTargets)}
-    {@const pTaskByTarget = new Map(pTargets.map((t) => [t.id, $model.tasks.filter((k) => k.targetId === t.id)]))}
     <div class="d-section insight">
       <div class="insight-head">
         <span class="lbl">Targets</span>
@@ -362,46 +439,100 @@
           {/each}
         </div>
 
-        {#if pTargets.length > 1}
-          <div class="graph-wrap">
-            <svg viewBox="0 0 {pGraph.width} {pGraph.height}" preserveAspectRatio="xMidYMid meet" class="dep-graph">
-              <defs>
-                <marker id="arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-                  <path d="M0,0 L8,4 L0,8 z" fill="var(--pm-muted, #8e8e93)" />
-                </marker>
-              </defs>
-              {#each pGraph.edges as e}
-                <path d="M {e.fromX},{e.fromY} C {(e.fromX + e.toX) / 2},{e.fromY} {(e.fromX + e.toX) / 2},{e.toY} {e.toX},{e.toY}"
-                      fill="none" stroke="var(--pm-muted, #8e8e93)" stroke-width="1.5" marker-end="url(#arrowhead)" opacity="0.7" />
-              {/each}
-              {#each pTargets as t (t.id)}
-                {@const pos = pGraph.positions.get(t.id)}
-                {#if pos}
-                  <g class="gnode" on:click={() => sel("target", t.id)}>
-                    <rect x={pos.x} y={pos.y} width={pGraph.nodeW} height={pGraph.nodeH} rx="9"
-                          fill="var(--pm-surface, #fff)" stroke="var(--pm-border, rgba(0,0,0,0.12))"
-                          class:gactive={$selection.kind === "target" && $selection.id === t.id} />
-                    <circle cx={pos.x + 9} cy={pos.y + pGraph.nodeH / 2} r="4" fill={STATUS_COLORS[t.status] ?? '#8E8E93'} />
-                    <text x={pos.x + 20} y={pos.y + 18} class="gname">{t.name}</text>
-                    <text x={pos.x + 20} y={pos.y + 33} class="gsub">{statusLabel(t.status)}</text>
-                  </g>
-                {/if}
-              {/each}
-            </svg>
+        <div class="gantt">
+          <div class="gantt-scroll">
+            <div class="gantt-inner" style="width:{LABEL_W + ganttWidth}px">
+              <div class="gantt-axis">
+                <div class="axis-label" style="width:{LABEL_W}px">Target</div>
+                <div class="axis-months" style="width:{ganttWidth}px">
+                  {#each ganttMonths as m}
+                    <div class="axis-month" style="left:{m.left}px;width:{m.width}px">{m.label}</div>
+                  {/each}
+                </div>
+              </div>
+              <div class="gantt-body" style="height:{ganttHeight}px">
+                <div class="gantt-today" style="left:{LABEL_W + todayLeft}px"></div>
+                <svg class="arrow-layer" style="left:{LABEL_W}px" width={ganttWidth} height={ganttHeight}>
+                  <defs>
+                    <marker id="gantt-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+                      <path d="M0,0 L8,4 L0,8 z" fill="var(--pm-muted, #8e8e93)" />
+                    </marker>
+                  </defs>
+                  {#each ganttArrows as a (a.key)}
+                    <path d="M {a.fromX},{a.fromY} C {a.fromX + 20},{a.fromY} {a.toX - 20},{a.toY} {a.toX},{a.toY}"
+                          fill="none" stroke="var(--pm-muted, #8e8e93)" stroke-width="1.5"
+                          marker-end="url(#gantt-arrow)" opacity="0.55" />
+                  {/each}
+                </svg>
+                {#each rowOrder as tid, i (tid)}
+                  {@const t = pTargets.find((x) => x.id === tid)}
+                  {@const pos = barPositions.get(tid)}
+                  {@const stats = targetStats(tid)}
+                  {@const isActive = $selection.kind === "target" && $selection.id === tid}
+                  {#if t && pos}
+                    <div class="g-row" style="top:{i * ROW_H}px;height:{ROW_H}px"
+                         draggable="true"
+                         on:dragstart={(e) => onRowDragStart(e, t.id)}
+                         on:dragover={(e) => onRowDragOver(e, t.id)}
+                         on:drop={(e) => onRowDrop(e, t.id)}
+                         class:dragging={dragId === t.id}
+                    >
+                      <div class="g-label" style="width:{LABEL_W}px" on:click={() => store.select("target", t.id)}>
+                        <span class="g-drag" title="Drag to reorder">⠿</span>
+                        <span class="g-dot" style="background:{STATUS_COLORS[t.status] ?? '#8E8E93'}"></span>
+                        <span class="g-name" class:active={isActive}>{t.name}</span>
+                      </div>
+                      <div class="g-bar" style="left:{LABEL_W + pos.x}px;width:{pos.width}px"
+                           class:active={isActive}
+                           class:hovering={hoveredId === t.id}
+                           on:click={() => store.select("target", t.id)}
+                           on:mouseenter={() => (hoveredId = t.id)}
+                           on:mouseleave={() => (hoveredId = null)}
+                      >
+                        <div class="g-bar-fill" style="--c:{STATUS_COLORS[t.status] ?? '#8E8E93'}"></div>
+                        <div class="g-bar-body">
+                          <span class="g-bar-name">{t.name}</span>
+                          {#if stats.total > 0}
+                            <span class="g-bar-prog">{stats.done}/{stats.total}</span>
+                            <span class="g-bar-track"><span class="g-bar-pct" style="width:{(stats.done / stats.total) * 100}%"></span></span>
+                          {/if}
+                        </div>
+                        {#if hoveredId === t.id}
+                          <div class="g-tooltip">
+                            <div class="gt-head">
+                              <span class="gt-dot" style="background:{STATUS_COLORS[t.status] ?? '#8E8E93'}"></span>
+                              <span class="gt-name">{t.name}</span>
+                            </div>
+                            <div class="gt-row"><span>Status</span><b>{statusLabel(t.status)}</b></div>
+                            {#if t.owner}<div class="gt-row"><span>Owner</span><b>{t.owner}</b></div>{/if}
+                            <div class="gt-row"><span>Dates</span><b>{fmtDate(t.startDate)} → {fmtDate(t.endDate)}</b></div>
+                            {#if stats.total > 0}
+                              <div class="gt-row"><span>Tasks</span><b>{stats.done}/{stats.total} done</b></div>
+                              {#if stats.blocked}<div class="gt-row"><span>Blocked</span><b>{stats.blocked}</b></div>{/if}
+                              {#if stats.inProgress}<div class="gt-row"><span>In progress</span><b>{stats.inProgress}</b></div>{/if}
+                            {/if}
+                            {#if t.dependencies.length}
+                              <div class="gt-deps">
+                                <span>Depends on</span>
+                                <div class="gt-dep-list">
+                                  {#each t.dependencies as d}
+                                    <span class="gt-dep">{targetName(d)}</span>
+                                  {/each}
+                                </div>
+                              </div>
+                            {/if}
+                            {#if t.description}
+                              <div class="gt-desc">{t.description}</div>
+                            {/if}
+                          </div>
+                        {/if}
+                      </div>
+                    </div>
+                  {/if}
+                {/each}
+              </div>
+            </div>
           </div>
-        {/if}
-
-        <div class="target-list">
-          {#each pTargets as t (t.id)}
-            {@const tTasks = pTaskByTarget.get(t.id) ?? []}
-            {@const tDone = tTasks.filter((k) => k.status === "done").length}
-            <button class="target-row" on:click={() => sel("target", t.id)} class:active={$selection.kind === "target" && $selection.id === t.id}>
-              <span class="bar" style="background:{STATUS_COLORS[t.status] ?? '#8E8E93'}"></span>
-              <span class="t-name">{t.name}</span>
-              <StatusDot status={t.status} size={7} />
-              <span class="t-count">{tDone}/{tTasks.length}</span>
-            </button>
-          {/each}
         </div>
       {/if}
     </div>
@@ -815,84 +946,277 @@
     font-weight: 600;
     color: var(--pm-muted, #8e8e93);
   }
-  .graph-wrap {
-    overflow-x: auto;
+  .gantt {
     background: var(--pm-col, rgba(0, 0, 0, 0.02));
     border-radius: 10px;
-    padding: 10px;
     border: 1px solid var(--pm-border, rgba(0, 0, 0, 0.06));
+    overflow: hidden;
   }
-  .dep-graph {
-    width: 100%;
-    min-height: 80px;
-    max-height: 280px;
-    display: block;
+  .gantt-scroll {
+    overflow: auto;
+    max-height: 360px;
   }
-  .gnode {
-    cursor: pointer;
+  .gantt-inner {
+    position: relative;
   }
-  .gnode rect {
-    transition: stroke 0.15s, filter 0.15s;
-  }
-  .gnode:hover rect {
-    stroke: var(--pm-accent, #007aff);
-    filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.08));
-  }
-  .gnode rect.gactive {
-    stroke: var(--pm-accent, #007aff);
-    stroke-width: 2;
-  }
-  .gname {
-    font-size: 10px;
-    font-weight: 600;
-    fill: var(--pm-text, #1d1d1f);
-  }
-  .gsub {
-    font-size: 9px;
-    fill: var(--pm-muted, #8e8e93);
-  }
-  .target-list {
+  .gantt-axis {
+    position: sticky;
+    top: 0;
+    z-index: 6;
     display: flex;
-    flex-direction: column;
-    gap: 4px;
+    align-items: flex-end;
+    height: 28px;
+    background: var(--pm-surface, #fff);
+    border-bottom: 1px solid var(--pm-border, rgba(0, 0, 0, 0.1));
   }
-  .target-row {
+  .axis-label {
+    position: sticky;
+    left: 0;
+    z-index: 7;
+    background: var(--pm-surface, #fff);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--pm-muted, #8e8e93);
+    font-weight: 600;
+    padding: 0 10px;
+    line-height: 28px;
+    border-right: 1px solid var(--pm-border, rgba(0, 0, 0, 0.06));
+  }
+  .axis-months {
+    position: relative;
+    height: 28px;
+  }
+  .axis-month {
+    position: absolute;
+    top: 7px;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--pm-muted, #8e8e93);
+    padding-left: 5px;
+    border-left: 1px solid var(--pm-border, rgba(0, 0, 0, 0.06));
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  .gantt-body {
+    position: relative;
+  }
+  .gantt-today {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: #ff3b30;
+    opacity: 0.4;
+    z-index: 1;
+    pointer-events: none;
+  }
+  .arrow-layer {
+    position: absolute;
+    top: 0;
+    z-index: 1;
+    pointer-events: none;
+  }
+  .g-row {
+    position: absolute;
+    left: 0;
+    right: 0;
+    border-bottom: 1px solid var(--pm-border, rgba(0, 0, 0, 0.04));
+  }
+  .g-row.dragging {
+    opacity: 0.4;
+  }
+  .g-label {
+    position: sticky;
+    left: 0;
+    z-index: 4;
     display: flex;
     align-items: center;
-    gap: 8px;
-    width: 100%;
-    text-align: left;
-    border: none;
-    background: transparent;
-    padding: 7px 8px;
-    border-radius: 8px;
+    gap: 6px;
+    height: 100%;
+    background: var(--pm-surface, #fff);
+    padding: 0 8px 0 4px;
+    border-right: 1px solid var(--pm-border, rgba(0, 0, 0, 0.06));
     cursor: pointer;
-    font-size: 12.5px;
+    font-size: 12px;
     color: var(--pm-text, #1d1d1f);
   }
-  .target-row:hover {
-    background: var(--pm-hover, rgba(0, 0, 0, 0.04));
+  .g-label:hover {
+    background: var(--pm-hover, rgba(0, 0, 0, 0.03));
   }
-  .target-row.active {
-    background: color-mix(in srgb, var(--pm-accent, #007aff) 12%, transparent);
-    color: var(--pm-accent, #007aff);
+  .g-drag {
+    color: var(--pm-muted, #8e8e93);
+    font-size: 12px;
+    cursor: grab;
+    flex-shrink: 0;
+    line-height: 1;
+    opacity: 0.4;
+    transition: opacity 0.15s;
   }
-  .target-row .bar {
-    width: 3px;
-    height: 16px;
-    border-radius: 3px;
+  .g-label:hover .g-drag {
+    opacity: 0.9;
+  }
+  .g-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
     flex-shrink: 0;
   }
-  .target-row .t-name {
+  .g-name {
     flex: 1;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    font-weight: 500;
   }
-  .target-row .t-count {
-    font-size: 11px;
+  .g-name.active {
+    color: var(--pm-accent, #007aff);
+    font-weight: 600;
+  }
+  .g-bar {
+    position: absolute;
+    top: 6px;
+    height: 36px;
+    border-radius: 8px;
+    overflow: visible;
+    cursor: pointer;
+    z-index: 2;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    transition: box-shadow 0.15s, transform 0.1s;
+  }
+  .g-bar:hover,
+  .g-bar.hovering {
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.15);
+    z-index: 5;
+  }
+  .g-bar.active {
+    outline: 2px solid var(--pm-accent, #007aff);
+    outline-offset: 1px;
+  }
+  .g-bar-fill {
+    position: absolute;
+    inset: 0;
+    background: var(--c, #007aff);
+    opacity: 0.22;
+    border-radius: 8px;
+  }
+  .g-bar-body {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 100%;
+    padding: 0 10px;
+  }
+  .g-bar-name {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--pm-text, #1d1d1f);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .g-bar-prog {
+    font-size: 10px;
     color: var(--pm-muted, #8e8e93);
     font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+    margin-left: auto;
+  }
+  .g-bar-track {
+    width: 36px;
+    height: 4px;
+    background: rgba(0, 0, 0, 0.1);
+    border-radius: 2px;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+  .g-bar-pct {
+    display: block;
+    height: 100%;
+    background: var(--c, #007aff);
+    border-radius: 2px;
+  }
+  .g-tooltip {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 20;
+    min-width: 200px;
+    max-width: 280px;
+    background: var(--pm-surface, #fff);
+    border: 1px solid var(--pm-border, rgba(0, 0, 0, 0.12));
+    border-radius: 10px;
+    padding: 10px 12px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+    font-size: 12px;
+    pointer-events: none;
+  }
+  .gt-head {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-bottom: 7px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--pm-border, rgba(0, 0, 0, 0.06));
+  }
+  .gt-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .gt-name {
+    font-size: 13px;
+    font-weight: 650;
+    color: var(--pm-text, #1d1d1f);
+  }
+  .gt-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 3px 0;
+    font-size: 11.5px;
+  }
+  .gt-row span {
+    color: var(--pm-muted, #8e8e93);
+  }
+  .gt-row b {
+    color: var(--pm-text, #1d1d1f);
+    font-weight: 600;
+    text-align: right;
+  }
+  .gt-deps {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--pm-border, rgba(0, 0, 0, 0.06));
+    font-size: 11.5px;
+  }
+  .gt-deps > span {
+    color: var(--pm-muted, #8e8e93);
+    display: block;
+    margin-bottom: 3px;
+  }
+  .gt-dep-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .gt-dep {
+    font-size: 10.5px;
+    background: var(--pm-col, rgba(0, 0, 0, 0.05));
+    padding: 2px 6px;
+    border-radius: 5px;
+    color: var(--pm-text, #1d1d1f);
+  }
+  .gt-desc {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--pm-border, rgba(0, 0, 0, 0.06));
+    font-size: 11.5px;
+    color: var(--pm-text, #1d1d1f);
+    line-height: 1.45;
+    white-space: pre-wrap;
   }
   .t-progress {
     margin: -2px 0 2px;

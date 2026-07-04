@@ -27,12 +27,28 @@ export type ViewTab = "overview" | "timeline" | "board" | "query" | "requirement
 
 /** A user-customizable board shortcut shown in the Insight section of the sidebar. */
 export type BoardType = "overview" | "timeline" | "board" | "query";
+
+export type WidgetView = "table" | "list" | "kanban" | "pie" | "donut" | "bar" | "metric" | "progress";
+export type WidgetSize = "small" | "medium" | "large" | "full";
+
+export interface DashboardWidget {
+  id: string;
+  title: string;
+  queryText: string;
+  view: WidgetView;
+  size: WidgetSize;
+  /** Field to group by for pie/donut/bar/kanban views. */
+  groupBy?: string;
+}
+
 export interface BoardItem {
   id: string;
   name: string;
   type: BoardType;
-  /** For `query` boards: the dataview-like query text. */
+  /** For `query` boards: the dataview-like query text (legacy, single-query). */
   queryText?: string;
+  /** Dashboard widgets for `query` boards (new multi-widget model). */
+  widgets?: DashboardWidget[];
 }
 
 const DEFAULT_BOARDS: BoardItem[] = [
@@ -233,6 +249,57 @@ export class PmStore extends Events {
     this.saveBoards(list);
   }
 
+  // ---- Dashboard widgets (multi-query boards) ----
+
+  addWidget(boardId: string, widget: Omit<DashboardWidget, "id">) {
+    const id = "w" + Date.now().toString(36);
+    const full: DashboardWidget = { ...widget, id };
+    const list = get(this.boards).map((b) => {
+      if (b.id !== boardId) return b;
+      // Migrate legacy single-queryText into a widget on first add.
+      let widgets = b.widgets;
+      if (!widgets || widgets.length === 0) {
+        widgets = b.queryText
+          ? [{ id: "w_legacy", title: b.name || "Query", queryText: b.queryText, view: "table" as WidgetView, size: "full" as WidgetSize }]
+          : [];
+      }
+      return { ...b, widgets: [...widgets, full] };
+    });
+    this.boards.set(list);
+    this.saveBoards(list);
+  }
+
+  updateWidget(boardId: string, widgetId: string, patch: Partial<DashboardWidget>) {
+    const list = get(this.boards).map((b) =>
+      b.id === boardId
+        ? { ...b, widgets: (b.widgets ?? []).map((w) => (w.id === widgetId ? { ...w, ...patch } : w)) }
+        : b
+    );
+    this.boards.set(list);
+    this.saveBoards(list);
+  }
+
+  removeWidget(boardId: string, widgetId: string) {
+    const list = get(this.boards).map((b) =>
+      b.id === boardId ? { ...b, widgets: (b.widgets ?? []).filter((w) => w.id !== widgetId) } : b
+    );
+    this.boards.set(list);
+    this.saveBoards(list);
+  }
+
+  /** Move a widget left (-1) or right (+1) in the board's widget order. */
+  moveWidget(boardId: string, widgetId: string, dir: -1 | 1) {
+    const board = get(this.boards).find((b) => b.id === boardId);
+    if (!board) return;
+    const widgets = [...(board.widgets ?? [])];
+    const idx = widgets.findIndex((w) => w.id === widgetId);
+    if (idx < 0) return;
+    const target = idx + dir;
+    if (target < 0 || target >= widgets.length) return;
+    [widgets[idx], widgets[target]] = [widgets[target], widgets[idx]];
+    this.updateBoard(boardId, { widgets });
+  }
+
   openBoard(id: string) {
     const board = get(this.boards).find((b) => b.id === id);
     if (!board) return;
@@ -303,6 +370,7 @@ export class PmStore extends Events {
     endDate?: string;
     status?: TargetStatus;
     description?: string;
+    dependencies?: string[];
   }): Promise<Target | null> {
     const m = get(this.model);
     const project = m.projects.find((p) => p.id === input.projectId);

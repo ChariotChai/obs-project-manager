@@ -63,6 +63,40 @@
   $: projectTargets = $model.targets.filter((t) => t.projectId === projectId);
   $: solutionMembers = $model.solution.members;
 
+  /**
+   * Check whether adding `depId` as a dependency of `targetId` would create a
+   * circular dependency. A cycle occurs when `targetId` is already reachable
+   * from `depId` by following existing dependency edges (i.e. `depId`
+   * transitively depends on `targetId`).
+   *
+   * In "create" mode there is no `targetId` yet, so no cycle is possible
+   * (nothing in the vault depends on the not-yet-created target).
+   */
+  function wouldCreateCycle(targetId: string | undefined, depId: string, allTargets: Target[]): boolean {
+    if (!targetId || targetId === depId) return true;
+    const visited = new Set<string>();
+    const stack = [depId];
+    while (stack.length) {
+      const cur = stack.pop()!;
+      if (cur === targetId) return true;
+      if (visited.has(cur)) continue;
+      visited.add(cur);
+      const t = allTargets.find((x) => x.id === cur);
+      if (t) for (const d of t.dependencies) if (!visited.has(d)) stack.push(d);
+    }
+    return false;
+  }
+
+  /** Targets that may NOT be picked as a dependency for the entity being edited. */
+  $: blockedDeps = new Set<string>(
+    mode === "edit" && entity
+      ? projectTargets
+          .filter((t) => t.id !== (entity as Target).id)
+          .filter((t) => wouldCreateCycle((entity as Target).id, t.id, $model.targets))
+          .map((t) => t.id)
+      : []
+  );
+
   function addSolutionMember() {
     const trimmed = newMemberName.trim();
     if (trimmed && !projectMembers.includes(trimmed)) {
@@ -374,14 +408,16 @@
         <div class="field full">
           <span>Dependencies</span>
           <div class="deps">
-            {#if projectTargets.length === 0}
+            {#if projectTargets.length === 0 || (projectTargets.length === 1 && projectTargets[0].id === entity?.id)}
               <p class="muted">No other targets in this project yet.</p>
             {/if}
             {#each projectTargets as t (t.id)}
               {#if entity?.id !== t.id}
-                <label class="check">
-                  <input type="checkbox" value={t.id} bind:group={deps} />
+                {@const blocked = blockedDeps.has(t.id)}
+                <label class="check" class:disabled={blocked} title={blocked ? "Cannot select: would create a circular dependency" : ""}>
+                  <input type="checkbox" value={t.id} bind:group={deps} disabled={blocked} />
                   <span>{t.name}</span>
+                  {#if blocked}<span class="cycle-warn">↻</span>{/if}
                 </label>
               {/if}
             {/each}
@@ -483,6 +519,17 @@
     color: var(--pm-text, #1d1d1f);
     font-weight: 400;
     cursor: pointer;
+  }
+  .check.disabled {
+    color: var(--pm-muted, #8e8e93);
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+  .cycle-warn {
+    margin-left: auto;
+    color: #ff9f0a;
+    font-size: 13px;
+    font-weight: 700;
   }
   .muted {
     color: var(--pm-muted, #8e8e93);
