@@ -46,6 +46,13 @@ export interface JiraRef {
   url?: string;
 }
 
+/** User-configurable status enums for a solution. Defaults to the built-in sets. */
+export interface StatusConfig {
+  project: string[];
+  target: string[];
+  task: string[];
+}
+
 export interface BaseEntity {
   id: string;
   kind: EntityKind;
@@ -61,6 +68,7 @@ export interface BaseEntity {
 export interface Solution extends BaseEntity {
   kind: "solution";
   members: string[];
+  statusConfig?: StatusConfig;
 }
 
 export interface Project extends BaseEntity {

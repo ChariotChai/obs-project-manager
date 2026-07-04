@@ -23,7 +23,24 @@ export interface Selection {
   id: string | null;
 }
 
-export type ViewTab = "overview" | "timeline" | "board" | "requirements";
+export type ViewTab = "overview" | "timeline" | "board" | "query" | "requirements";
+
+/** A user-customizable board shortcut shown in the Insight section of the sidebar. */
+export type BoardType = "overview" | "timeline" | "board" | "query";
+export interface BoardItem {
+  id: string;
+  name: string;
+  type: BoardType;
+  /** For `query` boards: the dataview-like query text. */
+  queryText?: string;
+}
+
+const DEFAULT_BOARDS: BoardItem[] = [
+  { id: "stats", name: "Statistics", type: "overview" },
+  { id: "timeline", name: "Timeline", type: "timeline" },
+  { id: "board", name: "Board", type: "board" },
+];
+const BOARDS_KEY = "pm.boards";
 
 export type EditorKind = "solution" | "project" | "target" | "task" | "requirement";
 export interface EditorState {
@@ -46,6 +63,10 @@ export class PmStore extends Events {
   model = writable<VaultModel>(EMPTY_MODEL);
   selection = writable<Selection>({ kind: null, id: null });
   tab = writable<ViewTab>("overview");
+  /** Currently active board id (Overview section). null when viewing requirements. */
+  activeBoardId = writable<string | null>("stats");
+  /** User-customizable boards shown in the Overview section. */
+  boards = writable<BoardItem[]>(DEFAULT_BOARDS);
   loading = writable<boolean>(false);
   error = writable<string | null>(null);
   editor = writable<EditorState | null>(null);
@@ -65,6 +86,7 @@ export class PmStore extends Events {
     this.app = app;
     this.settings = settings;
     this.persistence = new Persistence(app, settings);
+    this.boards.set(this.loadBoards());
   }
 
   setSettings(settings: PmSettings) {
@@ -148,6 +170,76 @@ export class PmStore extends Events {
 
   setTab(tab: ViewTab) {
     this.tab.set(tab);
+    if (tab !== "requirements") {
+      // Keep activeBoardId in sync when navigating via boards
+      const board = get(this.boards).find((b) => b.type === tab);
+      if (board) this.activeBoardId.set(board.id);
+    } else {
+      this.activeBoardId.set(null);
+    }
+  }
+
+  // ---- Boards (Overview section customization) ----
+
+  loadBoards(): BoardItem[] {
+    try {
+      const raw = window.localStorage.getItem(BOARDS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as BoardItem[];
+        if (Array.isArray(parsed) && parsed.length) return parsed;
+      }
+    } catch {
+      /* ignore */
+    }
+    return DEFAULT_BOARDS.map((b) => ({ ...b }));
+  }
+
+  saveBoards(list: BoardItem[]) {
+    try {
+      window.localStorage.setItem(BOARDS_KEY, JSON.stringify(list));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  addBoard(name: string, type: BoardType) {
+    const list = get(this.boards);
+    const id = "b" + Date.now().toString(36);
+    const next = [...list, { id, name: name.trim() || "Board", type }];
+    this.boards.set(next);
+    this.saveBoards(next);
+  }
+
+  removeBoard(id: string) {
+    const list = get(this.boards).filter((b) => b.id !== id);
+    this.boards.set(list);
+    this.saveBoards(list);
+    // If the removed board was active, fall back to the first remaining board.
+    if (get(this.activeBoardId) === id) {
+      const first = list[0];
+      if (first) {
+        this.activeBoardId.set(first.id);
+        this.tab.set(first.type);
+      } else {
+        this.activeBoardId.set(null);
+      }
+    }
+  }
+
+  /** Patch an existing board (e.g. update its query text). */
+  updateBoard(id: string, patch: Partial<BoardItem>) {
+    const list = get(this.boards).map((b) => (b.id === id ? { ...b, ...patch } : b));
+    this.boards.set(list);
+    this.saveBoards(list);
+  }
+
+  openBoard(id: string) {
+    const board = get(this.boards).find((b) => b.id === id);
+    if (!board) return;
+    this.activeBoardId.set(id);
+    this.tab.set(board.type);
+    // Navigating to a board clears any item selection so the board shows.
+    this.select(null, null);
   }
 
   openEditor(state: EditorState) {

@@ -14,6 +14,7 @@
     Priority,
     RequirementStatus,
     JiraRef,
+    StatusConfig,
   } from "../types";
   import {
     PROJECT_STATUSES,
@@ -21,6 +22,8 @@
     TASK_STATUSES,
     PRIORITIES,
     REQUIREMENT_STATUSES,
+    DEFAULT_STATUS_CONFIG,
+    effectiveStatuses,
     statusLabel,
     priorityLabel,
   } from "../constants";
@@ -48,6 +51,12 @@
   let deps: string[] = [];
   let reqStatus: RequirementStatus = "pool";
   let newMemberName = "";
+  let projectStatuses: string[] = [];
+  let targetStatuses: string[] = [];
+  let taskStatuses: string[] = [];
+  let newProjectStatus = "";
+  let newTargetStatus = "";
+  let newTaskStatus = "";
 
   const model = store.model;
 
@@ -57,7 +66,7 @@
   function addSolutionMember() {
     const trimmed = newMemberName.trim();
     if (trimmed && !projectMembers.includes(trimmed)) {
-      projectMembers.push(trimmed);
+      projectMembers = [...projectMembers, trimmed];
       newMemberName = "";
     }
   }
@@ -66,7 +75,40 @@
     projectMembers = projectMembers.filter((m) => m !== member);
   }
 
+  function addStatus(kind: "project" | "target" | "task") {
+    const v = (kind === "project" ? newProjectStatus : kind === "target" ? newTargetStatus : newTaskStatus).trim();
+    if (!v) return;
+    if (kind === "project") {
+      if (!projectStatuses.includes(v)) projectStatuses = [...projectStatuses, v];
+      newProjectStatus = "";
+    } else if (kind === "target") {
+      if (!targetStatuses.includes(v)) targetStatuses = [...targetStatuses, v];
+      newTargetStatus = "";
+    } else {
+      if (!taskStatuses.includes(v)) taskStatuses = [...taskStatuses, v];
+      newTaskStatus = "";
+    }
+  }
+
+  function removeStatus(kind: "project" | "target" | "task", value: string) {
+    if (kind === "project") projectStatuses = projectStatuses.filter((s) => s !== value);
+    else if (kind === "target") targetStatuses = targetStatuses.filter((s) => s !== value);
+    else taskStatuses = taskStatuses.filter((s) => s !== value);
+  }
+
+  function resetStatusesToDefault() {
+    projectStatuses = [...DEFAULT_STATUS_CONFIG.project];
+    targetStatuses = [...DEFAULT_STATUS_CONFIG.target];
+    taskStatuses = [...DEFAULT_STATUS_CONFIG.task];
+  }
+
   $: if (entity && mode === "edit") initFromEntity(entity);
+  // Initialise defaults for a brand-new solution (no entity to load from).
+  $: if (kind === "solution" && !entity && projectStatuses.length === 0 && targetStatuses.length === 0 && taskStatuses.length === 0) {
+    projectStatuses = [...DEFAULT_STATUS_CONFIG.project];
+    targetStatuses = [...DEFAULT_STATUS_CONFIG.target];
+    taskStatuses = [...DEFAULT_STATUS_CONFIG.task];
+  }
 
   function initFromEntity(e: any) {
     name = e.name ?? e.title ?? "";
@@ -82,6 +124,12 @@
     jiraKeys = (e.jiraEpics ?? e.jiraStories ?? []).map((j: JiraRef) => j.key).join(", ");
     deps = e.dependencies ? [...e.dependencies] : [];
     reqStatus = e.status === "pool" || e.status === "triaged" || e.status === "held" ? e.status : "pool";
+    if (e.kind === "solution") {
+      const cfg: StatusConfig | undefined = e.statusConfig;
+      projectStatuses = cfg?.project?.length ? [...cfg.project] : [...DEFAULT_STATUS_CONFIG.project];
+      targetStatuses = cfg?.target?.length ? [...cfg.target] : [...DEFAULT_STATUS_CONFIG.target];
+      taskStatuses = cfg?.task?.length ? [...cfg.task] : [...DEFAULT_STATUS_CONFIG.task];
+    }
   }
 
   function parseJira(s: string): JiraRef[] {
@@ -98,7 +146,12 @@
     saving = true;
     try {
       if (kind === "solution") {
-        await store.updateSolution({ name: name.trim(), description: description.trim() || undefined, members: projectMembers });
+        await store.updateSolution({
+          name: name.trim(),
+          description: description.trim() || undefined,
+          members: projectMembers,
+          statusConfig: { project: projectStatuses, target: targetStatuses, task: taskStatuses },
+        });
       } else if (kind === "project") {
         const payload: any = {
           name: name.trim(),
@@ -151,8 +204,12 @@
   }
 
   $: titleText = kind === "solution" ? "Solution Settings" : `${mode === "create" ? "New" : "Edit"} ${kind[0].toUpperCase() + kind.slice(1)}`;
+  $: cfg = $model.solution.statusConfig;
   $: statuses =
-    kind === "project" ? PROJECT_STATUSES : kind === "target" ? TARGET_STATUSES : kind === "task" ? TASK_STATUSES : [];
+    kind === "project" ? effectiveStatuses(cfg, "project")
+    : kind === "target" ? effectiveStatuses(cfg, "target")
+    : kind === "task" ? effectiveStatuses(cfg, "task")
+    : [];
 </script>
 
 <Modal {titleText} width={560} on:close={() => dispatch("close")}>
@@ -180,6 +237,60 @@
           {/each}
         </div>
       </label>
+      <div class="field full">
+        <div class="status-head">
+          <span>Status values</span>
+          <button class="btn ghost-mini" on:click={resetStatusesToDefault} title="Restore defaults">Reset to defaults</button>
+        </div>
+        <p class="muted hint">Customise the status options shown for projects, targets and tasks. Enter a value and press Enter or click +.</p>
+        <div class="status-grid">
+          <div class="status-col">
+            <div class="status-col-head">Project</div>
+            <div class="member-add">
+              <input bind:value={newProjectStatus} placeholder="e.g. archived" on:keydown={(e) => e.key === "Enter" && (e.preventDefault(), addStatus("project"))} />
+              <button class="btn primary small" on:click={() => addStatus("project")}>+</button>
+            </div>
+            <div class="status-chips">
+              {#each projectStatuses as s}
+                <div class="member-tag">
+                  <span>{statusLabel(s)}</span>
+                  <button class="remove" on:click={() => removeStatus("project", s)}>×</button>
+                </div>
+              {/each}
+            </div>
+          </div>
+          <div class="status-col">
+            <div class="status-col-head">Target</div>
+            <div class="member-add">
+              <input bind:value={newTargetStatus} placeholder="e.g. review" on:keydown={(e) => e.key === "Enter" && (e.preventDefault(), addStatus("target"))} />
+              <button class="btn primary small" on:click={() => addStatus("target")}>+</button>
+            </div>
+            <div class="status-chips">
+              {#each targetStatuses as s}
+                <div class="member-tag">
+                  <span>{statusLabel(s)}</span>
+                  <button class="remove" on:click={() => removeStatus("target", s)}>×</button>
+                </div>
+              {/each}
+            </div>
+          </div>
+          <div class="status-col">
+            <div class="status-col-head">Task</div>
+            <div class="member-add">
+              <input bind:value={newTaskStatus} placeholder="e.g. review" on:keydown={(e) => e.key === "Enter" && (e.preventDefault(), addStatus("task"))} />
+              <button class="btn primary small" on:click={() => addStatus("task")}>+</button>
+            </div>
+            <div class="status-chips">
+              {#each taskStatuses as s}
+                <div class="member-tag">
+                  <span>{statusLabel(s)}</span>
+                  <button class="remove" on:click={() => removeStatus("task", s)}>×</button>
+                </div>
+              {/each}
+            </div>
+          </div>
+        </div>
+      </div>
       <label class="field full">
         <span>Description</span>
         <textarea bind:value={description} rows="3" placeholder="Notes…"></textarea>
@@ -418,5 +529,50 @@
   .member-tag .remove:hover {
     color: var(--pm-text, #1d1d1f);
     background: rgba(0, 0, 0, 0.08);
+  }
+  .status-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .ghost-mini {
+    border: 1px solid var(--pm-border, rgba(0, 0, 0, 0.12));
+    background: transparent;
+    color: var(--pm-accent, #007aff);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 7px;
+    cursor: pointer;
+  }
+  .ghost-mini:hover {
+    background: var(--pm-hover, rgba(0, 0, 0, 0.04));
+  }
+  .hint {
+    margin: 2px 0 4px;
+  }
+  .status-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+  }
+  .status-col {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .status-col-head {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--pm-text, #1d1d1f);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+  .status-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    min-height: 8px;
   }
 </style>

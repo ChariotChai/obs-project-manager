@@ -1,6 +1,6 @@
 <script lang="ts">
   import type PmStore from "../store";
-  import { get } from "svelte/store";
+  import type { BoardType } from "../store";
   import Avatar from "./components/Avatar.svelte";
   import StatusDot from "./components/StatusDot.svelte";
   import { buildTree } from "../store";
@@ -9,9 +9,24 @@
 
   const model = store.model;
   const selection = store.selection;
+  const tab = store.tab;
+  const boards = store.boards;
+  const activeBoardId = store.activeBoardId;
 
   let query = "";
   let expanded: Record<string, boolean> = {};
+
+  // Inline "add board" form state
+  let addingBoard = false;
+  let newBoardName = "";
+  let newBoardType: BoardType = "board";
+
+  const BOARD_TYPES: { value: BoardType; label: string }[] = [
+    { value: "overview", label: "Statistics" },
+    { value: "timeline", label: "Timeline" },
+    { value: "board", label: "Board" },
+    { value: "query", label: "Query" },
+  ];
 
   $: tree = buildTree($model);
 
@@ -31,14 +46,10 @@
     })
     .filter(Boolean) as ReturnType<typeof buildTree>;
 
-  function toggle(id: string) {
+  function toggle(id: string, e: MouseEvent) {
+    e.stopPropagation();
     expanded[id] = !expanded[id];
     expanded = { ...expanded };
-  }
-
-  function count(kind: "targets" | "tasks", projId: string): number {
-    if (kind === "targets") return $model.targets.filter((t) => t.projectId === projId).length;
-    return $model.tasks.filter((t) => t.projectId === projId).length;
   }
 
   function projectDone(projectId: string): number {
@@ -47,13 +58,31 @@
     return Math.round((ts.filter((t) => t.status === "done").length / ts.length) * 100);
   }
 
-  export function newProject() {
-    store.openEditor({ mode: "create", kind: "project" });
+  function sel(kind: any, id: string) {
+    store.select(kind, id);
   }
 
-  function sel(kind: any, id: string, e: MouseEvent) {
-    e.stopPropagation();
-    store.select(kind, id);
+  function openReqPool() {
+    store.select(null, null);
+    store.setTab("requirements");
+  }
+
+  function confirmAddBoard() {
+    const name = newBoardName.trim();
+    if (!name) {
+      addingBoard = false;
+      return;
+    }
+    store.addBoard(name, newBoardType);
+    newBoardName = "";
+    newBoardType = "board";
+    addingBoard = false;
+  }
+
+  function cancelAddBoard() {
+    addingBoard = false;
+    newBoardName = "";
+    newBoardType = "board";
   }
 </script>
 
@@ -63,80 +92,116 @@
     <input placeholder="Search projects, targets, tasks" bind:value={query} />
   </div>
 
-  <div class="section-head">
-    <span>Projects</span>
-    <button class="add" title="New project" on:click={newProject}>+</button>
-  </div>
-
-  <div class="tree">
-    {#each filtered as node (node.project.id)}
-      <div
-        class="row project"
-        class:active={$selection.kind === "project" && $selection.id === node.project.id}
-        on:click={() => toggle(node.project.id)}
-        on:dblclick={(e) => sel("project", node.project.id, e)}
-        role="treeitem"
-      >
-        <span class="caret" class:open={expanded[node.project.id]}>▸</span>
-        <span class="bar" style="background:{node.project.color}"></span>
-        <span class="label">{node.project.name}</span>
-        <StatusDot status={node.project.status} size={7} />
-        {#if node.targets.length}
-          <span class="count">{projectDone(node.project.id)}%</span>
-        {/if}
+  <div class="scroll">
+    <!-- Section 1: Insight (customizable boards) -->
+    <section class="sec">
+      <div class="section-head">
+        <span>Insight</span>
+        <button class="add" title="Add board" on:click={() => (addingBoard = true)}>+</button>
       </div>
 
-      {#if expanded[node.project.id]}
-        {#each node.targets as tn (tn.target.id)}
+      {#if addingBoard}
+        <div class="add-form">
+          <input class="add-input" placeholder="Board name" bind:value={newBoardName} on:keydown={(e) => e.key === "Enter" && confirmAddBoard()} />
+          <select bind:value={newBoardType}>
+            {#each BOARD_TYPES as bt}
+              <option value={bt.value}>{bt.label}</option>
+            {/each}
+          </select>
+          <div class="add-form-actions">
+            <button class="mini primary" on:click={confirmAddBoard}>Add</button>
+            <button class="mini" on:click={cancelAddBoard}>Cancel</button>
+          </div>
+        </div>
+      {/if}
+
+      <div class="board-list">
+        {#each $boards as b (b.id)}
           <div
-            class="row target"
-            class:active={$selection.kind === "target" && $selection.id === tn.target.id}
-            on:click={() => toggle(tn.target.id)}
-            on:dblclick={(e) => sel("target", tn.target.id, e)}
+            class="row board"
+            class:active={$tab !== "requirements" && $activeBoardId === b.id}
+            on:click={() => store.openBoard(b.id)}
+            role="button"
           >
-            <span class="indent"></span>
-            <span class="caret" class:open={expanded[tn.target.id]}>▸</span>
-            <span class="label">{tn.target.name}</span>
-            <StatusDot status={tn.target.status} size={6} />
-            <span class="count">{tn.tasks.length}</span>
+            <svg viewBox="0 0 16 16" width="14" height="14" class="ic"><path fill="currentColor" d="M2 3.5A1.5 1.5 0 0 1 3.5 2h3A1.5 1.5 0 0 1 8 3.5v3A1.5 1.5 0 0 1 6.5 8h-3A1.5 1.5 0 0 1 2 6.5zm7 0A1.5 1.5 0 0 1 10.5 2h3A1.5 1.5 0 0 1 15 3.5v3A1.5 1.5 0 0 1 13.5 8h-3A1.5 1.5 0 0 1 9 6.5zm-7 7A1.5 1.5 0 0 1 3.5 9h3A1.5 1.5 0 0 1 8 10.5v3A1.5 1.5 0 0 1 6.5 15h-3A1.5 1.5 0 0 1 2 13.5zm7 0A1.5 1.5 0 0 1 10.5 9h3A1.5 1.5 0 0 1 15 10.5v3A1.5 1.5 0 0 1 13.5 15h-3A1.5 1.5 0 0 1 9 13.5z"/></svg>
+            <span class="label">{b.name}</span>
+            <button class="rm" title="Remove board" on:click={(e) => { e.stopPropagation(); store.removeBoard(b.id); }}>×</button>
+          </div>
+        {:else}
+          <div class="empty-sm">No boards. Add one with +.</div>
+        {/each}
+      </div>
+    </section>
+
+    <!-- Section 2: Projects tree -->
+    <section class="sec">
+      <div class="section-head">
+        <span>Projects</span>
+        <button class="add" title="New project" on:click={() => store.openEditor({ mode: "create", kind: "project" })}>+</button>
+      </div>
+
+      <div class="tree">
+        {#each filtered as node (node.project.id)}
+          <div
+            class="row project"
+            class:active={$selection.kind === "project" && $selection.id === node.project.id}
+            on:click={() => sel("project", node.project.id)}
+            role="treeitem"
+          >
+            <span class="caret" class:open={expanded[node.project.id]} on:click={(e) => toggle(node.project.id, e)}>▸</span>
+            <span class="bar" style="background:{node.project.color}"></span>
+            <span class="label">{node.project.name}</span>
+            <StatusDot status={node.project.status} size={7} />
+            {#if node.targets.length}
+              <span class="count">{projectDone(node.project.id)}%</span>
+            {/if}
           </div>
 
-          {#if expanded[tn.target.id]}
-            {#each tn.tasks as task (task.id)}
+          {#if expanded[node.project.id]}
+            {#each node.targets as tn (tn.target.id)}
               <div
-                class="row task"
-                class:active={$selection.kind === "task" && $selection.id === task.id}
-                class:done={task.status === "done"}
-                on:click={(e) => sel("task", task.id, e)}
+                class="row target"
+                class:active={$selection.kind === "target" && $selection.id === tn.target.id}
+                on:click={() => sel("target", tn.target.id)}
               >
-                <span class="indent2"></span>
-                <span class="tasktick" class:checked={task.status === "done"}></span>
-                <span class="label">{task.name}</span>
-                {#if task.owner}
-                  <Avatar name={task.owner} size={16} />
-                {/if}
+                <span class="indent"></span>
+                <span class="caret" class:open={expanded[tn.target.id]} on:click={(e) => toggle(tn.target.id, e)}>▸</span>
+                <span class="label">{tn.target.name}</span>
+                <StatusDot status={tn.target.status} size={6} />
+                <span class="count">{tn.tasks.length}</span>
               </div>
+
+              {#if expanded[tn.target.id]}
+                {#each tn.tasks as task (task.id)}
+                  <div
+                    class="row task"
+                    class:active={$selection.kind === "task" && $selection.id === task.id}
+                    class:done={task.status === "done"}
+                    on:click={() => sel("task", task.id)}
+                  >
+                    <span class="indent2"></span>
+                    <span class="tasktick" class:checked={task.status === "done"}></span>
+                    <span class="label">{task.name}</span>
+                    {#if task.owner}
+                      <Avatar name={task.owner} size={16} />
+                    {/if}
+                  </div>
+                {/each}
+              {/if}
             {/each}
-            <button
-              class="add-sub task"
-              on:click={() => store.openEditor({ mode: "create", kind: "task", targetId: tn.target.id })}
-            >+ Task</button>
           {/if}
+        {:else}
+          <div class="empty">
+            <p>No projects yet</p>
+            <button class="add" on:click={() => store.openEditor({ mode: "create", kind: "project" })}>Create project</button>
+          </div>
         {/each}
-        <button
-          class="add-sub"
-          on:click={() => store.openEditor({ mode: "create", kind: "target", projectId: node.project.id })}
-        >+ Target</button>
-      {/if}
-    {:else}
-      <div class="empty">
-        <p>No projects yet</p>
-        <button class="add" on:click={newProject}>Create project</button>
       </div>
-    {/each}
+    </section>
   </div>
 
-  <div class="pool" on:click={() => store.setTab("requirements")} class:active={$model.requirements.filter((r) => r.status === "pool").length > 0}>
+  <!-- Section 3: Requirement pool (footer) -->
+  <div class="pool" on:click={openReqPool} class:active={$tab === "requirements"} role="button">
     <svg viewBox="0 0 16 16" width="16" height="16"><path fill="currentColor" d="M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v2A1.5 1.5 0 0 1 12.5 7h-9A1.5 1.5 0 0 1 2 5.5zm0 7A1.5 1.5 0 0 1 3.5 9h9A1.5 1.5 0 0 1 14 10.5v2A1.5 1.5 0 0 1 12.5 14h-9A1.5 1.5 0 0 1 2 12.5z"/></svg>
     <div class="pool-text">
       <div class="pool-title">Requirement pool</div>
@@ -163,6 +228,7 @@
     border: 1px solid var(--pm-border, rgba(0, 0, 0, 0.1));
     border-radius: 9px;
     color: var(--pm-muted, #8e8e93);
+    flex-shrink: 0;
   }
   .search input {
     border: none;
@@ -173,11 +239,26 @@
     width: 100%;
     color: var(--pm-text, #1d1d1f);
   }
+  .scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+  .sec {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .sec:last-child {
+    flex: 1;
+  }
   .section-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 8px 16px 4px;
+    padding: 10px 16px 4px;
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.6px;
@@ -198,10 +279,55 @@
   .add:hover {
     background: var(--pm-hover, rgba(0, 0, 0, 0.05));
   }
+  .add-form {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 2px 12px 8px;
+    padding: 8px;
+    background: var(--pm-input, #fff);
+    border: 1px solid var(--pm-border, rgba(0, 0, 0, 0.1));
+    border-radius: 9px;
+  }
+  .add-input,
+  .add-form select {
+    font: inherit;
+    font-size: 12px;
+    padding: 5px 8px;
+    border: 1px solid var(--pm-border, rgba(0, 0, 0, 0.1));
+    border-radius: 7px;
+    background: var(--pm-surface, #fff);
+    color: var(--pm-text, #1d1d1f);
+    outline: none;
+  }
+  .add-form-actions {
+    display: flex;
+    gap: 6px;
+    justify-content: flex-end;
+  }
+  .mini {
+    border: 1px solid var(--pm-border, rgba(0, 0, 0, 0.12));
+    background: transparent;
+    color: var(--pm-text, #1d1d1f);
+    font: inherit;
+    font-size: 11.5px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 7px;
+    cursor: pointer;
+  }
+  .mini.primary {
+    background: var(--pm-accent, #007aff);
+    color: #fff;
+    border-color: var(--pm-accent, #007aff);
+  }
+  .board-list {
+    padding: 2px 8px 4px;
+  }
   .tree {
+    padding: 2px 8px 8px;
     flex: 1;
     overflow-y: auto;
-    padding: 2px 8px 8px;
   }
   .row {
     display: flex;
@@ -221,12 +347,46 @@
     background: color-mix(in srgb, var(--pm-accent, #007aff) 12%, transparent);
     color: var(--pm-accent, #007aff);
   }
+  .row.board .ic {
+    color: var(--pm-muted, #8e8e93);
+    flex-shrink: 0;
+  }
+  .row.board.active .ic {
+    color: var(--pm-accent, #007aff);
+  }
+  .rm {
+    border: none;
+    background: transparent;
+    color: var(--pm-muted, #8e8e93);
+    font-size: 14px;
+    width: 18px;
+    height: 18px;
+    border-radius: 6px;
+    cursor: pointer;
+    line-height: 1;
+    opacity: 0;
+    transition: opacity 0.12s;
+  }
+  .row.board:hover .rm {
+    opacity: 1;
+  }
+  .rm:hover {
+    background: rgba(255, 59, 48, 0.12);
+    color: #ff3b30;
+  }
   .caret {
     font-size: 10px;
     color: var(--pm-muted, #8e8e93);
     transition: transform 0.15s;
-    width: 10px;
+    width: 12px;
     text-align: center;
+    flex-shrink: 0;
+    cursor: pointer;
+    border-radius: 4px;
+  }
+  .caret:hover {
+    background: var(--pm-hover, rgba(0, 0, 0, 0.08));
+    color: var(--pm-text, #1d1d1f);
   }
   .caret.open {
     transform: rotate(90deg);
@@ -277,27 +437,6 @@
     background: #34c759;
     border-color: #34c759;
   }
-  .add-sub {
-    border: none;
-    background: transparent;
-    color: var(--pm-muted, #8e8e93);
-    font-size: 11.5px;
-    padding: 5px 12px 5px 38px;
-    cursor: pointer;
-    text-align: left;
-    width: 100%;
-    border-radius: 7px;
-  }
-  .add-sub:hover {
-    color: var(--pm-accent, #007aff);
-    background: var(--pm-hover, rgba(0, 0, 0, 0.04));
-  }
-  .add-sub {
-    margin-left: 16px;
-  }
-  .add-sub.task {
-    margin-left: 38px;
-  }
   .empty {
     text-align: center;
     padding: 28px 16px;
@@ -307,6 +446,11 @@
     margin: 0 0 10px;
     font-size: 13px;
   }
+  .empty-sm {
+    padding: 8px 12px 12px;
+    font-size: 12px;
+    color: var(--pm-muted, #8e8e93);
+  }
   .pool {
     display: flex;
     align-items: center;
@@ -315,12 +459,14 @@
     cursor: pointer;
     border-top: 1px solid var(--pm-border, rgba(0, 0, 0, 0.08));
     color: var(--pm-text, #1d1d1f);
+    flex-shrink: 0;
   }
   .pool:hover {
     background: var(--pm-hover, rgba(0, 0, 0, 0.04));
   }
   .pool.active {
     color: var(--pm-accent, #007aff);
+    background: color-mix(in srgb, var(--pm-accent, #007aff) 8%, transparent);
   }
   .pool-title {
     font-size: 13px;

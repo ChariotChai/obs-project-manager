@@ -1,7 +1,7 @@
 <script lang="ts">
   import type PmStore from "../store";
   import type { Task, TaskStatus } from "../types";
-  import { TASK_STATUSES, statusLabel, PRIORITY_COLORS, priorityLabel } from "../constants";
+  import { effectiveStatuses, statusLabel, PRIORITY_COLORS, priorityLabel } from "../constants";
   import Avatar from "./components/Avatar.svelte";
 
   export let store: PmStore;
@@ -13,6 +13,7 @@
   let draggingId: string | null = null;
 
   $: owners = [...new Set($model.tasks.map((t) => t.owner).filter(Boolean))] as string[];
+  $: taskStatusList = effectiveStatuses($model.solution.statusConfig, "task") as TaskStatus[];
 
   $: filtered = $model.tasks.filter((t) => {
     if (projectFilter !== "all" && t.projectId !== projectFilter) return false;
@@ -74,8 +75,8 @@
     </div>
   </div>
 
-  <div class="cols">
-    {#each TASK_STATUSES as status}
+  <div class="cols" style="--cols:{taskStatusList.length}">
+    {#each taskStatusList as status}
       <div
         class="col"
         on:dragover={onDragOver}
@@ -163,7 +164,7 @@
   .cols {
     flex: 1;
     display: grid;
-    grid-template-columns: repeat(5, minmax(220px, 1fr));
+    grid-template-columns: repeat(var(--cols, 5), minmax(220px, 1fr));
     gap: 12px;
     padding: 0 22px 22px;
     overflow-x: auto;
@@ -205,6 +206,7 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+    align-items: stretch;
   }
   .card {
     background: var(--pm-surface, #fff);
@@ -214,6 +216,9 @@
     cursor: pointer;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
     transition: transform 0.12s, box-shadow 0.12s;
+    /* Keep cards at content height — never stretch to fill the column */
+    flex: 0 0 auto;
+    min-height: 0;
   }
   .card:hover {
     transform: translateY(-1px);
@@ -289,5 +294,6 @@
     border: 1.5px dashed var(--pm-border, rgba(0, 0, 0, 0.1));
     border-radius: 10px;
     margin-top: 4px;
+    flex: 0 0 auto;
   }
 </style>

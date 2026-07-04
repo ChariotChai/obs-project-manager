@@ -23,9 +23,9 @@
     parentId?: string;
   };
 
-  $: rows = buildRows();
-
-  function buildRows(): Row[] {
+  // Inline reactive expression so Svelte tracks `showTasks` as a dependency
+  // (function declarations called from `$:` can miss reactivity tracking).
+  $: rows = (() => {
     if (!$model) return [];
     const out: Row[] = [];
     for (const p of $model.projects) {
@@ -42,7 +42,7 @@
       }
     }
     return out;
-  }
+  })();
 
   $: dated = rows.filter((r) => r.start || r.end);
 

@@ -4,6 +4,7 @@ import type {
   TaskStatus,
   Priority,
   RequirementStatus,
+  StatusConfig,
 } from "./types";
 
 export const PROJECT_STATUSES: ProjectStatus[] = [
@@ -37,6 +38,22 @@ export const REQUIREMENT_STATUSES: RequirementStatus[] = [
   "triaged",
   "held",
 ];
+
+/** Default status configuration — matches the built-in enums above. */
+export const DEFAULT_STATUS_CONFIG: StatusConfig = {
+  project: [...PROJECT_STATUSES],
+  target: [...TARGET_STATUSES],
+  task: [...TASK_STATUSES],
+};
+
+/**
+ * Resolve the effective status list for a solution, falling back to defaults
+ * when the user hasn't customised statuses (or stored an empty list).
+ */
+export function effectiveStatuses(cfg: StatusConfig | undefined, kind: "project" | "target" | "task"): string[] {
+  const list = cfg?.[kind];
+  return list && list.length ? list : DEFAULT_STATUS_CONFIG[kind];
+}
 
 // Apple-ish palette: muted, with a single accent. Status colors are soft.
 export const STATUS_COLORS: Record<string, string> = {

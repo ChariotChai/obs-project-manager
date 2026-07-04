@@ -13,6 +13,7 @@ import type {
   TaskStatus,
   Priority,
   RequirementStatus,
+  StatusConfig,
 } from "./types";
 import { DEFAULT_SETTINGS } from "./types";
 import { genId, slugify, joinPath, normalizeFolder } from "./util";
@@ -255,7 +256,21 @@ export class Persistence {
       updatedAt: ts(fm.updatedAt, file.stat.mtime),
       description: str(fm.description),
       members: asStrings(fm.members),
+      statusConfig: this.parseStatusConfig(fm.statusConfig),
     };
+  }
+
+  private parseStatusConfig(v: any): StatusConfig | undefined {
+    if (!v || typeof v !== "object") return undefined;
+    const pick = (k: string): string[] => {
+      const arr = asStrings(v[k]);
+      return arr.length ? arr : [];
+    };
+    const project = pick("project");
+    const target = pick("target");
+    const task = pick("task");
+    if (!project.length && !target.length && !task.length) return undefined;
+    return { project, target, task };
   }
 
   async ensureSolution(slug: string, name: string): Promise<Solution> {
@@ -279,7 +294,7 @@ export class Persistence {
   }
 
   private solutionFM(s: Solution): FM {
-    return {
+    const fm: FM = {
       kind: "solution",
       id: s.id,
       name: s.name,
@@ -288,6 +303,8 @@ export class Persistence {
       description: s.description,
       members: s.members,
     };
+    if (s.statusConfig) fm.statusConfig = s.statusConfig;
+    return fm;
   }
 
   // ---- Loading ----

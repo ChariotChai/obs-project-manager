@@ -7,6 +7,7 @@
   import Requirements from "./Requirements.svelte";
   import DetailPanel from "./DetailPanel.svelte";
   import EditorModal from "./EditorModal.svelte";
+  import QueryView from "./QueryView.svelte";
 
   export let store: PmStore;
 
@@ -18,16 +19,26 @@
   const editor = store.editor;
   const solutions = store.solutions;
   const activeSlug = store.activeSlug;
-
-  const tabs = [
-    { id: "overview", label: "Overview" },
-    { id: "timeline", label: "Timeline" },
-    { id: "board", label: "Board" },
-    { id: "requirements", label: "Requirements" },
-  ] as const;
+  const boards = store.boards;
+  const activeBoardId = store.activeBoardId;
 
   $: solutionName = $model.solution.name || $solutions.find((s) => s.slug === $activeSlug)?.name || "Project Manager";
   $: hasSolution = !!$model.solution.id;
+
+  // Show the detail view when a project/target/task is selected; otherwise show
+  // the active dashboard/view.
+  $: showDetail = (() => {
+    const k = $selection.kind;
+    const id = $selection.id;
+    if (!k || !id) return false;
+    if (k === "project") return $model.projects.some((p) => p.id === id);
+    if (k === "target") return $model.targets.some((t) => t.id === id);
+    if (k === "task") return $model.tasks.some((t) => t.id === id);
+    return false;
+  })();
+
+  // Active board object (for query-type boards that need their config).
+  $: activeBoard = $boards.find((b) => b.id === $activeBoardId) ?? null;
 
   function switchSolution(e: Event) {
     const slug = (e.target as HTMLSelectElement).value;
@@ -52,21 +63,11 @@
       {/if}
     </div>
 
-    <nav class="tabs">
-      {#each tabs as t}
-        <button class:active={$tab === t.id} on:click={() => store.setTab(t.id)}>{t.label}</button>
-      {/each}
-    </nav>
-
     <div class="topbar-actions">
       <button class="ghost" on:click={() => store.openEditor({ mode: "edit", kind: "solution", entity: $model.solution })} title="Solution settings">
         <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19.14 12.94a2 2 0 0 0-1.41-1.41l-5.96-.94a6.96 6.96 0 0 0-1.21 1.21l-.94 5.96a2 2 0 0 0 1.41 1.41l5.96.94a6.96 6.96 0 0 0 1.21-1.21l.94-5.96zM12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6 6 2.69 6 6-2.69 6-6 6z"/></svg>
+        <span>Solution config</span>
       </button>
-      {#if $tab === "overview"}
-        <button class="primary" on:click={() => store.openEditor({ mode: "create", kind: "project" })}>+ New project</button>
-      {:else if $tab === "requirements"}
-        <button class="primary" on:click={() => store.openEditor({ mode: "create", kind: "requirement" })}>+ New requirement</button>
-      {/if}
     </div>
   </header>
 
@@ -88,20 +89,24 @@
         <div class="loading">Loading…</div>
       {:else}
         <div class="content">
-          {#if $tab === "overview"}
+          {#if showDetail}
+            <div class="detail-wrap">
+              <DetailPanel {store} />
+            </div>
+          {:else if $tab === "overview"}
             <Overview {store} />
           {:else if $tab === "timeline"}
             <Timeline {store} />
           {:else if $tab === "board"}
             <Board {store} />
+          {:else if $tab === "query" && activeBoard}
+            <QueryView {store} board={activeBoard} />
           {:else if $tab === "requirements"}
             <Requirements {store} />
           {/if}
         </div>
       {/if}
     </main>
-
-    <DetailPanel {store} />
   </div>
 
   {#if $editor}
@@ -143,6 +148,7 @@
     gap: 10px;
     color: var(--pm-accent, #007aff);
     min-width: 0;
+    flex: 1;
   }
   .brand-text {
     display: flex;
@@ -169,35 +175,6 @@
     color: var(--pm-text, #1d1d1f);
     margin-left: 6px;
   }
-  .tabs {
-    display: flex;
-    gap: 2px;
-    margin: 0 auto;
-    background: var(--pm-col, rgba(0, 0, 0, 0.05));
-    border-radius: 10px;
-    padding: 3px;
-  }
-  .tabs button {
-    border: none;
-    background: transparent;
-    font: inherit;
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--pm-muted, #8e8e93);
-    padding: 6px 16px;
-    border-radius: 8px;
-    cursor: pointer;
-    transition: background 0.15s, color 0.15s;
-  }
-  .tabs button:hover {
-    color: var(--pm-text, #1d1d1f);
-  }
-  .tabs button.active {
-    background: var(--pm-surface, #fff);
-    color: var(--pm-text, #1d1d1f);
-    font-weight: 600;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-  }
   .topbar-actions {
     margin-left: auto;
   }
@@ -217,12 +194,18 @@
   }
   .ghost {
     background: transparent;
-    border: none;
-    color: var(--pm-muted, #8e8e93);
-    padding: 7px;
+    border: 1px solid var(--pm-border, rgba(0, 0, 0, 0.12));
+    color: var(--pm-text, #1d1d1f);
+    padding: 7px 12px;
     border-radius: 9px;
     cursor: pointer;
     transition: color 0.15s, background 0.15s;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 600;
   }
   .ghost:hover {
     color: var(--pm-text, #1d1d1f);
@@ -231,7 +214,7 @@
   .body {
     flex: 1;
     display: grid;
-    grid-template-columns: 280px 1fr 320px;
+    grid-template-columns: 280px 1fr;
     min-height: 0;
   }
   .main {
@@ -249,8 +232,14 @@
   .content :global(.overview),
   .content :global(.timeline),
   .content :global(.board),
-  .content :global(.req) {
+  .content :global(.req),
+  .content :global(.qview) {
     height: 100%;
+  }
+  .detail-wrap {
+    height: 100%;
+    max-width: 760px;
+    margin: 0 auto;
   }
   .banner {
     margin: 12px 22px;

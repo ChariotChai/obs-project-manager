@@ -82,7 +82,7 @@
           {#each $model.projects as p (p.id)}
             <button
               class="proj-row"
-              on:click={() => { store.select("project", p.id); store.setTab("timeline"); }}
+              on:click={() => store.select("project", p.id)}
             >
               <div class="proj-top">
                 <span class="proj-name"><span class="bar" style="background:{p.color}"></span>{p.name}</span>
