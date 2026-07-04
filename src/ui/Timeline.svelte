@@ -80,12 +80,14 @@
     return d.getTime();
   }
 
-  $: totalWidth = range.days * DAY;
+  $: totalWidth = range ? range.days * DAY : 0;
 
   function left(t: number): number {
+    if (!range) return 0;
     return ((t - range.min) / 86400000) * DAY;
   }
   function barStyle(r: Row): string {
+    if (!range) return "left:0px;width:0px";
     const s = r.start ? toTime(r.start) : r.end ? toTime(r.end) - 86400000 : range.min;
     const e = r.end ? toTime(r.end) : r.start ? toTime(r.start) + 86400000 : range.min + 86400000;
     const l = left(s);
@@ -95,6 +97,7 @@
 
   // Build month/week headers
   $: headers = (() => {
+    if (!range) return [];
     const months: { label: string; left: number; width: number }[] = [];
     let cursor = range.min;
     while (cursor < range.max) {
@@ -141,8 +144,8 @@
           {/each}
         </div>
         <div class="tl-weeks">
-          {#each Array(range.days) as _, i}
-            <div class="day" class:weekend={new Date(range.min + i * 86400000).getDay() % 6 === 0}></div>
+          {#each range ? Array(range.days) : [] as _, i}
+            <div class="day" class:weekend={range ? new Date(range.min + i * 86400000).getDay() % 6 === 0 : false}></div>
           {/each}
         </div>
 
