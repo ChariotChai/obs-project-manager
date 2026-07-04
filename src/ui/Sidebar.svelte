@@ -1,8 +1,8 @@
 <script lang="ts">
   import type PmStore from "../store";
-  import type { BoardType } from "../store";
   import Avatar from "./components/Avatar.svelte";
   import StatusDot from "./components/StatusDot.svelte";
+  import ConfirmModal from "./components/ConfirmModal.svelte";
   import { buildTree } from "../store";
 
   export let store: PmStore;
@@ -19,14 +19,10 @@
   // Inline "add board" form state
   let addingBoard = false;
   let newBoardName = "";
-  let newBoardType: BoardType = "board";
 
-  const BOARD_TYPES: { value: BoardType; label: string }[] = [
-    { value: "overview", label: "Statistics" },
-    { value: "timeline", label: "Timeline" },
-    { value: "board", label: "Board" },
-    { value: "query", label: "Query" },
-  ];
+  // Pending board-deletion confirmation (holds the board id, or null).
+  let pendingDeleteBoardId: string | null = null;
+  let pendingDeleteBoardName = "";
 
   $: tree = buildTree($model);
 
@@ -73,16 +69,31 @@
       addingBoard = false;
       return;
     }
-    store.addBoard(name, newBoardType);
+    store.addBoard(name);
     newBoardName = "";
-    newBoardType = "board";
     addingBoard = false;
   }
 
   function cancelAddBoard() {
     addingBoard = false;
     newBoardName = "";
-    newBoardType = "board";
+  }
+
+  function askRemoveBoard(e: MouseEvent, id: string, name: string) {
+    e.stopPropagation();
+    pendingDeleteBoardId = id;
+    pendingDeleteBoardName = name;
+  }
+
+  function doRemoveBoard() {
+    if (pendingDeleteBoardId) store.removeBoard(pendingDeleteBoardId);
+    pendingDeleteBoardId = null;
+    pendingDeleteBoardName = "";
+  }
+
+  function cancelRemoveBoard() {
+    pendingDeleteBoardId = null;
+    pendingDeleteBoardName = "";
   }
 </script>
 
@@ -103,11 +114,6 @@
       {#if addingBoard}
         <div class="add-form">
           <input class="add-input" placeholder="Board name" bind:value={newBoardName} on:keydown={(e) => e.key === "Enter" && confirmAddBoard()} />
-          <select bind:value={newBoardType}>
-            {#each BOARD_TYPES as bt}
-              <option value={bt.value}>{bt.label}</option>
-            {/each}
-          </select>
           <div class="add-form-actions">
             <button class="mini primary" on:click={confirmAddBoard}>Add</button>
             <button class="mini" on:click={cancelAddBoard}>Cancel</button>
@@ -125,7 +131,7 @@
           >
             <svg viewBox="0 0 16 16" width="14" height="14" class="ic"><path fill="currentColor" d="M2 3.5A1.5 1.5 0 0 1 3.5 2h3A1.5 1.5 0 0 1 8 3.5v3A1.5 1.5 0 0 1 6.5 8h-3A1.5 1.5 0 0 1 2 6.5zm7 0A1.5 1.5 0 0 1 10.5 2h3A1.5 1.5 0 0 1 15 3.5v3A1.5 1.5 0 0 1 13.5 8h-3A1.5 1.5 0 0 1 9 6.5zm-7 7A1.5 1.5 0 0 1 3.5 9h3A1.5 1.5 0 0 1 8 10.5v3A1.5 1.5 0 0 1 6.5 15h-3A1.5 1.5 0 0 1 2 13.5zm7 0A1.5 1.5 0 0 1 10.5 9h3A1.5 1.5 0 0 1 15 10.5v3A1.5 1.5 0 0 1 13.5 15h-3A1.5 1.5 0 0 1 9 13.5z"/></svg>
             <span class="label">{b.name}</span>
-            <button class="rm" title="Remove board" on:click={(e) => { e.stopPropagation(); store.removeBoard(b.id); }}>×</button>
+            <button class="rm" title="Remove board" on:click={(e) => askRemoveBoard(e, b.id, b.name)}>×</button>
           </div>
         {:else}
           <div class="empty-sm">No boards. Add one with +.</div>
@@ -209,6 +215,16 @@
     </div>
   </div>
 </aside>
+
+{#if pendingDeleteBoardId}
+  <ConfirmModal
+    title="Remove board"
+    message={`Remove the board "${pendingDeleteBoardName}"? Its widgets will be discarded. This cannot be undone.`}
+    confirmLabel="Remove"
+    on:confirm={doRemoveBoard}
+    on:cancel={cancelRemoveBoard}
+  />
+{/if}
 
 <style>
   .sidebar {

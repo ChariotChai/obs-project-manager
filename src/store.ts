@@ -23,12 +23,9 @@ export interface Selection {
   id: string | null;
 }
 
-export type ViewTab = "overview" | "timeline" | "board" | "query" | "requirements";
+export type ViewTab = "query" | "requirements";
 
-/** A user-customizable board shortcut shown in the Insight section of the sidebar. */
-export type BoardType = "overview" | "timeline" | "board" | "query";
-
-export type WidgetView = "table" | "list" | "kanban" | "pie" | "donut" | "bar" | "metric" | "progress";
+export type WidgetView = "table" | "list" | "kanban" | "pie" | "donut" | "bar" | "metric" | "progress" | "timeline";
 export type WidgetSize = "small" | "medium" | "large" | "full";
 
 export interface DashboardWidget {
@@ -44,19 +41,58 @@ export interface DashboardWidget {
 export interface BoardItem {
   id: string;
   name: string;
-  type: BoardType;
-  /** For `query` boards: the dataview-like query text (legacy, single-query). */
-  queryText?: string;
-  /** Dashboard widgets for `query` boards (new multi-widget model). */
+  /** Dashboard widgets for this board. All boards are query-based now. */
   widgets?: DashboardWidget[];
+  /** Legacy field kept only for migration of older persisted state. */
+  type?: string;
+  /** Legacy field kept only for migration of older persisted state. */
+  queryText?: string;
+}
+
+/** Default widgets for the built-in Statistics board. */
+function defaultStatsWidgets(): Omit<DashboardWidget, "id">[] {
+  return [
+    { title: "Projects", queryText: "FROM project", view: "metric", size: "small" },
+    { title: "Tasks Done", queryText: "FROM task\nWHERE status = done", view: "metric", size: "small" },
+    { title: "Completion", queryText: "FROM task", view: "progress", size: "small" },
+    { title: "Blocked", queryText: "FROM task\nWHERE status = blocked", view: "metric", size: "small" },
+    { title: "In Pool", queryText: "FROM requirement\nWHERE status = pool", view: "metric", size: "small" },
+    { title: "Tasks by Status", queryText: "FROM task\nGROUP BY status", view: "bar", size: "medium" },
+    { title: "Tasks by Priority", queryText: "FROM task\nGROUP BY priority", view: "bar", size: "medium" },
+  ];
+}
+
+/** Default widgets for the built-in Timeline board. */
+function defaultTimelineWidgets(): Omit<DashboardWidget, "id">[] {
+  return [
+    { title: "Projects Timeline", queryText: "FROM project\nSORT startDate ASC", view: "timeline", size: "full" },
+    { title: "Targets Timeline", queryText: "FROM target\nSORT startDate ASC", view: "timeline", size: "full" },
+  ];
+}
+
+/** Default widgets for the built-in Board (kanban) board. */
+function defaultBoardWidgets(): Omit<DashboardWidget, "id">[] {
+  return [
+    { title: "Tasks by Status", queryText: "FROM task\nGROUP BY status", view: "kanban", size: "full" },
+  ];
+}
+
+function makeBoard(id: string, name: string, widgets: Omit<DashboardWidget, "id">[]): BoardItem {
+  return {
+    id,
+    name,
+    widgets: widgets.map((w, i) => ({ ...w, id: `${id}_w${i}` })),
+  };
 }
 
 const DEFAULT_BOARDS: BoardItem[] = [
-  { id: "stats", name: "Statistics", type: "overview" },
-  { id: "timeline", name: "Timeline", type: "timeline" },
-  { id: "board", name: "Board", type: "board" },
+  makeBoard("stats", "Statistics", defaultStatsWidgets()),
+  makeBoard("timeline", "Timeline", defaultTimelineWidgets()),
+  makeBoard("board", "Board", defaultBoardWidgets()),
 ];
-const BOARDS_KEY = "pm.boards";
+
+/** Bumped to v2 to invalidate legacy boards that carried a `type` field. */
+const BOARDS_KEY = "pm.boards.v2";
 
 export type EditorKind = "solution" | "project" | "target" | "task" | "requirement";
 export interface EditorState {
@@ -78,7 +114,7 @@ const EMPTY_MODEL: VaultModel = {
 export class PmStore extends Events {
   model = writable<VaultModel>(EMPTY_MODEL);
   selection = writable<Selection>({ kind: null, id: null });
-  tab = writable<ViewTab>("overview");
+  tab = writable<ViewTab>("query");
   /** Currently active board id (Overview section). null when viewing requirements. */
   activeBoardId = writable<string | null>("stats");
   /** User-customizable boards shown in the Overview section. */
@@ -186,11 +222,7 @@ export class PmStore extends Events {
 
   setTab(tab: ViewTab) {
     this.tab.set(tab);
-    if (tab !== "requirements") {
-      // Keep activeBoardId in sync when navigating via boards
-      const board = get(this.boards).find((b) => b.type === tab);
-      if (board) this.activeBoardId.set(board.id);
-    } else {
+    if (tab === "requirements") {
       this.activeBoardId.set(null);
     }
   }
@@ -218,10 +250,10 @@ export class PmStore extends Events {
     }
   }
 
-  addBoard(name: string, type: BoardType) {
+  addBoard(name: string) {
     const list = get(this.boards);
     const id = "b" + Date.now().toString(36);
-    const next = [...list, { id, name: name.trim() || "Board", type }];
+    const next = [...list, { id, name: name.trim() || "Board", widgets: [] }];
     this.boards.set(next);
     this.saveBoards(next);
   }
@@ -235,7 +267,7 @@ export class PmStore extends Events {
       const first = list[0];
       if (first) {
         this.activeBoardId.set(first.id);
-        this.tab.set(first.type);
+        this.tab.set("query");
       } else {
         this.activeBoardId.set(null);
       }
@@ -256,13 +288,7 @@ export class PmStore extends Events {
     const full: DashboardWidget = { ...widget, id };
     const list = get(this.boards).map((b) => {
       if (b.id !== boardId) return b;
-      // Migrate legacy single-queryText into a widget on first add.
-      let widgets = b.widgets;
-      if (!widgets || widgets.length === 0) {
-        widgets = b.queryText
-          ? [{ id: "w_legacy", title: b.name || "Query", queryText: b.queryText, view: "table" as WidgetView, size: "full" as WidgetSize }]
-          : [];
-      }
+      const widgets = b.widgets ?? [];
       return { ...b, widgets: [...widgets, full] };
     });
     this.boards.set(list);
@@ -287,16 +313,19 @@ export class PmStore extends Events {
     this.saveBoards(list);
   }
 
-  /** Move a widget left (-1) or right (+1) in the board's widget order. */
-  moveWidget(boardId: string, widgetId: string, dir: -1 | 1) {
+  /**
+   * Reorder widgets within a board by moving the widget at `fromIndex` to
+   * `toIndex`. Used by the drag-and-drop interaction on the dashboard grid.
+   */
+  reorderWidgets(boardId: string, fromIndex: number, toIndex: number) {
     const board = get(this.boards).find((b) => b.id === boardId);
     if (!board) return;
     const widgets = [...(board.widgets ?? [])];
-    const idx = widgets.findIndex((w) => w.id === widgetId);
-    if (idx < 0) return;
-    const target = idx + dir;
-    if (target < 0 || target >= widgets.length) return;
-    [widgets[idx], widgets[target]] = [widgets[target], widgets[idx]];
+    if (fromIndex < 0 || fromIndex >= widgets.length) return;
+    if (toIndex < 0 || toIndex >= widgets.length) return;
+    if (fromIndex === toIndex) return;
+    const [moved] = widgets.splice(fromIndex, 1);
+    widgets.splice(toIndex, 0, moved);
     this.updateBoard(boardId, { widgets });
   }
 
@@ -304,7 +333,7 @@ export class PmStore extends Events {
     const board = get(this.boards).find((b) => b.id === id);
     if (!board) return;
     this.activeBoardId.set(id);
-    this.tab.set(board.type);
+    this.tab.set("query");
     // Navigating to a board clears any item selection so the board shows.
     this.select(null, null);
   }

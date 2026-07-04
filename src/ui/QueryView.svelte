@@ -6,6 +6,7 @@
   import type { AnyEntity, Priority } from "../types";
   import StatusDot from "./components/StatusDot.svelte";
   import Avatar from "./components/Avatar.svelte";
+  import ConfirmModal from "./components/ConfirmModal.svelte";
   import { priorityLabel, PRIORITY_COLORS, STATUS_COLORS } from "../constants";
 
   export let store: PmStore;
@@ -14,14 +15,8 @@
   const model = store.model;
   const selection = store.selection;
 
-  // ---- Widget list (with legacy migration) ----
-  // Effective widgets: prefer the new `widgets` array; if absent but the board
-  // has a legacy `queryText`, treat that as a single full-width table widget.
-  $: widgets = board.widgets && board.widgets.length
-    ? board.widgets
-    : board.queryText
-    ? [{ id: "w_legacy", title: board.name || "Query", queryText: board.queryText, view: "table" as WidgetView, size: "full" as WidgetSize }]
-    : [];
+  // ---- Widget list ----
+  $: widgets = board.widgets ?? [];
 
   // ---- Per-widget live query results, memoised by widget id ----
   type WidgetResult = {
@@ -59,6 +54,9 @@
   } | null = null;
   let draftError: string | null = null;
 
+  // ---- Widget deletion confirmation ----
+  let pendingDeleteWidget: DashboardWidget | null = null;
+
   const VIEWS: { value: WidgetView; label: string; hint: string }[] = [
     { value: "table", label: "Table", hint: "Rows + columns" },
     { value: "list", label: "List", hint: "Compact one-line items" },
@@ -68,6 +66,7 @@
     { value: "bar", label: "Bar", hint: "Horizontal bars per group" },
     { value: "metric", label: "Metric", hint: "Single big number" },
     { value: "progress", label: "Progress", hint: "Done vs total ring" },
+    { value: "timeline", label: "Timeline", hint: "Gantt-style date bars" },
   ];
 
   const SIZES: { value: WidgetSize; label: string; span: number }[] = [
@@ -137,18 +136,64 @@
     draftError = null;
   }
 
-  function removeWidget(w: DashboardWidget) {
-    store.removeWidget(board.id, w.id);
+  function askRemoveWidget(w: DashboardWidget) {
+    pendingDeleteWidget = w;
   }
 
-  function moveWidget(w: DashboardWidget, dir: -1 | 1) {
-    store.moveWidget(board.id, w.id, dir);
+  function doRemoveWidget() {
+    if (pendingDeleteWidget) store.removeWidget(board.id, pendingDeleteWidget.id);
+    pendingDeleteWidget = null;
+  }
+
+  function cancelRemoveWidget() {
+    pendingDeleteWidget = null;
+  }
+
+  // ---- Drag-and-drop widget reordering ----
+  // We track the index of the widget currently being dragged and the index of
+  // the widget it's hovering over (for the drop indicator).
+  let dragFromIndex: number | null = null;
+  let dragOverIndex: number | null = null;
+
+  function onWidgetDragStart(e: DragEvent, index: number) {
+    dragFromIndex = index;
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      // Required for Firefox to start the drag.
+      e.dataTransfer.setData("text/plain", String(index));
+    }
+  }
+
+  function onWidgetDragOver(e: DragEvent, index: number) {
+    if (dragFromIndex === null) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    dragOverIndex = index;
+  }
+
+  function onWidgetDrop(e: DragEvent, index: number) {
+    e.preventDefault();
+    const from = dragFromIndex;
+    dragFromIndex = null;
+    dragOverIndex = null;
+    if (from === null || from === index) return;
+    store.reorderWidgets(board.id, from, index);
+  }
+
+  function onWidgetDragEnd() {
+    dragFromIndex = null;
+    dragOverIndex = null;
   }
 
   // ---- Selection handling ----
   function sel(spec: QuerySpec | null, entity: AnyEntity) {
     if (!spec) return;
     store.select(entityKindOf(spec.from), entity.id);
+  }
+  /** Select an entity by id alone (used by timeline rows that synthesise a stub). */
+  function selById(spec: QuerySpec | null, id: string) {
+    if (!spec) return;
+    store.select(entityKindOf(spec.from), id);
   }
 
   // ---- Cell formatting ----
@@ -179,6 +224,21 @@
   function entPriorityLabel(r: AnyEntity): string {
     const p = (r as any).priority as Priority | undefined;
     return p ? priorityLabel(p) : "";
+  }
+  function entStartDate(r: AnyEntity): string {
+    return (r as any).startDate ?? "";
+  }
+  function entEndDate(r: AnyEntity): string {
+    // Tasks use `dueDate` as their end.
+    return (r as any).endDate ?? (r as any).dueDate ?? "";
+  }
+  function entProjectId(r: AnyEntity): string {
+    return (r as any).projectId ?? "";
+  }
+  function entProjectColor(r: AnyEntity): string {
+    const pid = entProjectId(r);
+    if (!pid) return "#007AFF";
+    return $model.projects.find((p) => p.id === pid)?.color ?? "#007AFF";
   }
 
   // ---- Chart palette ----
@@ -270,6 +330,100 @@
     if (!spec) return [];
     return FIELD_HINTS[spec.from];
   }
+
+  // ---- Timeline view data ----
+  // Each row becomes a horizontal bar positioned by its start/end dates.
+  const DAY_PX = 24;
+  const ROW_H = 32;
+
+  type TimelineRow = {
+    id: string;
+    name: string;
+    start: number | null;
+    end: number | null;
+    color: string;
+    status: string;
+  };
+
+  function toTime(d: string): number {
+    if (!d) return NaN;
+    const t = new Date(d + "T00:00:00").getTime();
+    return Number.isFinite(t) ? t : NaN;
+  }
+  function floorToDay(t: number): number {
+    const d = new Date(t);
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  }
+  function ceilToDay(t: number): number {
+    const d = new Date(t);
+    d.setHours(24, 0, 0, 0);
+    return d.getTime();
+  }
+
+  function timelineData(rows: AnyEntity[]): {
+    items: TimelineRow[];
+    min: number;
+    max: number;
+    days: number;
+    width: number;
+    months: { label: string; left: number; width: number }[];
+    todayLeft: number;
+  } {
+    const items: TimelineRow[] = rows.map((r) => {
+      const sd = entStartDate(r);
+      const ed = entEndDate(r);
+      return {
+        id: r.id,
+        name: entName(r),
+        start: sd ? toTime(sd) : null,
+        end: ed ? toTime(ed) : null,
+        color: entProjectColor(r),
+        status: entStatus(r),
+      };
+    });
+    let min = Infinity;
+    let max = -Infinity;
+    for (const it of items) {
+      if (it.start !== null && Number.isFinite(it.start)) min = Math.min(min, it.start);
+      if (it.end !== null && Number.isFinite(it.end)) max = Math.max(max, it.end);
+    }
+    if (!Number.isFinite(min) || !Number.isFinite(max)) {
+      const now = Date.now();
+      min = now - 14 * 86400000;
+      max = now + 30 * 86400000;
+    }
+    min = floorToDay(min) - 2 * 86400000;
+    max = ceilToDay(max) + 2 * 86400000;
+    const days = Math.max(1, Math.round((max - min) / 86400000));
+    const width = days * DAY_PX;
+
+    const months: { label: string; left: number; width: number }[] = [];
+    let cursor = min;
+    while (cursor < max) {
+      const d = new Date(cursor);
+      const monthStart = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
+      const next = new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime();
+      const start = Math.max(cursor, monthStart);
+      const end = Math.min(max, next);
+      months.push({
+        label: d.toLocaleDateString(undefined, { month: "short", year: "numeric" }),
+        left: ((start - min) / 86400000) * DAY_PX,
+        width: ((end - start) / 86400000) * DAY_PX,
+      });
+      cursor = next;
+    }
+    const todayLeft = ((floorToDay(Date.now()) - min) / 86400000) * DAY_PX;
+    return { items, min, max, days, width, months, todayLeft };
+  }
+
+  function tlBarStyle(it: TimelineRow, min: number): string {
+    const s = it.start !== null && Number.isFinite(it.start) ? it.start : it.end !== null ? it.end - 86400000 : min;
+    const e = it.end !== null && Number.isFinite(it.end) ? it.end : it.start !== null ? it.start + 86400000 : min + 86400000;
+    const left = ((s - min) / 86400000) * DAY_PX;
+    const width = Math.max(DAY_PX, ((e - s) / 86400000) * DAY_PX);
+    return `left:${left}px;width:${width}px`;
+  }
 </script>
 
 <div class="qview">
@@ -346,15 +500,24 @@
     <div class="grid">
       {#each widgets as w, i (w.id)}
         {@const res = results[i]}
-        <article class="card span-{w.size}" style="--span:{sizeSpan(w.size)}">
+        <article
+          class="card span-{w.size}"
+          style="--span:{sizeSpan(w.size)}"
+          class:dragging={dragFromIndex === i}
+          class:drop-target={dragOverIndex === i && dragFromIndex !== null && dragFromIndex !== i}
+          draggable="true"
+          on:dragstart={(e) => onWidgetDragStart(e, i)}
+          on:dragover={(e) => onWidgetDragOver(e, i)}
+          on:drop={(e) => onWidgetDrop(e, i)}
+          on:dragend={onWidgetDragEnd}
+        >
           <header class="card-head">
+            <span class="drag-handle" title="Drag to reorder">⠿</span>
             <span class="card-title">{w.title}</span>
             <span class="card-badge">{viewLabel(w.view)}</span>
             <div class="card-tools">
-              <button class="tool" title="Move left" on:click={() => moveWidget(w, -1)} disabled={i === 0}>‹</button>
-              <button class="tool" title="Move right" on:click={() => moveWidget(w, 1)} disabled={i === widgets.length - 1}>›</button>
               <button class="tool" title="Edit" on:click={() => startEditWidget(w)}>✎</button>
-              <button class="tool danger" title="Remove" on:click={() => removeWidget(w)}>×</button>
+              <button class="tool danger" title="Remove" on:click={() => askRemoveWidget(w)}>×</button>
             </div>
           </header>
 
@@ -367,7 +530,7 @@
               </div>
             {:else if !res.spec}
               <p class="muted">No query.</p>
-            {:else if res.rows.length === 0 && (w.view === "table" || w.view === "list" || w.view === "kanban")}
+            {:else if res.rows.length === 0 && (w.view === "table" || w.view === "list" || w.view === "kanban" || w.view === "timeline")}
               <p class="muted">No rows matched.</p>
             {:else}
               {#if w.view === "table"}
@@ -494,6 +657,34 @@
                   </svg>
                   <p class="progress-caption">Done vs total</p>
                 </div>
+              {:else if w.view === "timeline"}
+                {@const tl = timelineData(res.rows)}
+                <div class="tl-widget">
+                  <div class="tlw-scroll">
+                    <div class="tlw-inner" style="width:{tl.width}px">
+                      <div class="tlw-months">
+                        {#each tl.months as m}
+                          <div class="tlw-month" style="left:{m.left}px;width:{m.width}px">{m.label}</div>
+                        {/each}
+                      </div>
+                      <div class="tlw-today" style="left:{tl.todayLeft}px"></div>
+                      <div class="tlw-rows" style="height:{tl.items.length * ROW_H}px">
+                        {#each tl.items as it, idx (it.id)}
+                          <div
+                            class="tlw-row"
+                            style="top:{idx * ROW_H}px;height:{ROW_H}px"
+                            on:click={() => selById(res.spec, it.id)}
+                            role="button"
+                          >
+                            <div class="tlw-bar" style="{tlBarStyle(it, tl.min)}; --c:{it.color}">
+                              <span class="tlw-name">{it.name}</span>
+                            </div>
+                          </div>
+                        {/each}
+                      </div>
+                    </div>
+                  </div>
+                </div>
               {/if}
             {/if}
           </div>
@@ -502,6 +693,16 @@
     </div>
   {/if}
 </div>
+
+{#if pendingDeleteWidget}
+  <ConfirmModal
+    title="Remove widget"
+    message={`Remove the widget "${pendingDeleteWidget.title}"? This cannot be undone.`}
+    confirmLabel="Remove"
+    on:confirm={doRemoveWidget}
+    on:cancel={cancelRemoveWidget}
+  />
+{/if}
 
 <style>
   .qview {
@@ -1137,5 +1338,131 @@
     .card {
       grid-column: span min(var(--span, 2), 2);
     }
+  }
+
+  /* ---- Drag handle & drag-and-drop visual feedback ---- */
+  .drag-handle {
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--pm-muted, #8e8e93);
+    cursor: grab;
+    font-size: 14px;
+    line-height: 1;
+    opacity: 0.4;
+    transition: opacity 0.12s, color 0.12s;
+    user-select: none;
+  }
+  .card:hover .drag-handle {
+    opacity: 0.85;
+  }
+  .drag-handle:hover {
+    color: var(--pm-text, #1d1d1f);
+  }
+  .drag-handle:active {
+    cursor: grabbing;
+  }
+  .card.dragging {
+    opacity: 0.4;
+    transform: scale(0.98);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+  }
+  .card.drop-target {
+    outline: 2px dashed var(--pm-accent, #007aff);
+    outline-offset: -2px;
+    background: color-mix(in srgb, var(--pm-accent, #007aff) 6%, var(--pm-surface, #fff));
+  }
+
+  /* ---- Timeline widget ---- */
+  .tl-widget {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .tlw-scroll {
+    flex: 1;
+    overflow: auto;
+    border: 1px solid var(--pm-border, rgba(0, 0, 0, 0.06));
+    border-radius: 9px;
+    background: var(--pm-col, rgba(0, 0, 0, 0.015));
+    min-height: 0;
+  }
+  .tlw-inner {
+    position: relative;
+    min-height: 100%;
+  }
+  .tlw-months {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    height: 26px;
+    background: var(--pm-surface, #fff);
+    border-bottom: 1px solid var(--pm-border, rgba(0, 0, 0, 0.08));
+  }
+  .tlw-month {
+    position: absolute;
+    top: 0;
+    height: 26px;
+    padding: 6px 8px 0;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--pm-muted, #8e8e93);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    white-space: nowrap;
+    overflow: hidden;
+    border-right: 1px solid var(--pm-border, rgba(0, 0, 0, 0.06));
+  }
+  .tlw-today {
+    position: absolute;
+    top: 26px;
+    bottom: 0;
+    width: 2px;
+    background: #ff3b30;
+    opacity: 0.5;
+    z-index: 1;
+    pointer-events: none;
+  }
+  .tlw-rows {
+    position: relative;
+    margin-top: 0;
+  }
+  .tlw-row {
+    position: absolute;
+    left: 0;
+    right: 0;
+    padding: 3px 0;
+    box-sizing: border-box;
+    cursor: pointer;
+  }
+  .tlw-row:hover {
+    background: var(--pm-hover, rgba(0, 0, 0, 0.03));
+  }
+  .tlw-bar {
+    position: absolute;
+    left: 0;
+    height: 22px;
+    border-radius: 6px;
+    background: var(--c, #007aff);
+    color: #fff;
+    padding: 3px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 16px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    opacity: 0.92;
+  }
+  .tlw-bar:hover {
+    opacity: 1;
+  }
+  .tlw-name {
+    pointer-events: none;
   }
 </style>

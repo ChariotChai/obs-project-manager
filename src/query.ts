@@ -17,7 +17,7 @@
 import type { AnyEntity, VaultModel, EntityKind } from "./types";
 
 export type QueryEntity = "task" | "target" | "project" | "requirement";
-export type QueryView = "table" | "kanban" | "list" | "pie" | "donut" | "bar" | "metric" | "progress";
+export type QueryView = "table" | "kanban" | "list" | "pie" | "donut" | "bar" | "metric" | "progress" | "timeline";
 
 export interface QueryFilter {
   field: string;
@@ -91,7 +91,7 @@ export function parseQuery(input: string): ParseResult {
       }
     } else if (upper.startsWith("VIEW ")) {
       const v = raw.slice(5).trim().toLowerCase();
-      const validViews = ["table", "kanban", "list", "pie", "donut", "bar", "metric", "progress"];
+      const validViews = ["table", "kanban", "list", "pie", "donut", "bar", "metric", "progress", "timeline"];
       if (!validViews.includes(v)) {
         return { spec: null, error: { line: i + 1, message: `Unknown view "${v}". Use one of: ${validViews.join(", ")}.` } };
       }

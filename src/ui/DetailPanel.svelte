@@ -17,10 +17,15 @@
   import Progress from "./components/Progress.svelte";
   import Badge from "./components/Badge.svelte";
   import StatusDot from "./components/StatusDot.svelte";
+  import ConfirmModal from "./components/ConfirmModal.svelte";
 
   export let store: PmStore;
   const model = store.model;
   const selection = store.selection;
+
+  // ---- Delete confirmation state ----
+  // Holds the kind + display name of the entity pending deletion, or null.
+  let pendingDelete: { kind: "project" | "target" | "task" | "requirement"; name: string } | null = null;
 
   $: sel = $selection;
   $: cfg = $model.solution.statusConfig;
@@ -51,11 +56,24 @@
     else if (selectedRequirement) store.updateRequirement(selectedRequirement.id, patch);
   }
 
-  function remove() {
-    if (selectedProject) store.deleteProject(selectedProject.id);
-    else if (selectedTarget) store.deleteTarget(selectedTarget.id);
-    else if (selectedTask) store.deleteTask(selectedTask.id);
-    else if (selectedRequirement) store.deleteRequirement(selectedRequirement.id);
+  function askRemove() {
+    if (selectedProject) pendingDelete = { kind: "project", name: selectedProject.name };
+    else if (selectedTarget) pendingDelete = { kind: "target", name: selectedTarget.name };
+    else if (selectedTask) pendingDelete = { kind: "task", name: selectedTask.name };
+    else if (selectedRequirement) pendingDelete = { kind: "requirement", name: selectedRequirement.title };
+  }
+
+  function doRemove() {
+    if (!pendingDelete) return;
+    if (selectedProject && pendingDelete.kind === "project") store.deleteProject(selectedProject.id);
+    else if (selectedTarget && pendingDelete.kind === "target") store.deleteTarget(selectedTarget.id);
+    else if (selectedTask && pendingDelete.kind === "task") store.deleteTask(selectedTask.id);
+    else if (selectedRequirement && pendingDelete.kind === "requirement") store.deleteRequirement(selectedRequirement.id);
+    pendingDelete = null;
+  }
+
+  function cancelRemove() {
+    pendingDelete = null;
   }
 
   function edit() {
@@ -708,11 +726,22 @@
     <div class="d-actions">
       <button class="act" on:click={edit}>Edit</button>
       <button class="act" on:click={openFile}>Open note</button>
-      <button class="act danger" on:click={remove}>Delete</button>
+      <button class="act danger" on:click={askRemove}>Delete</button>
       <span class="updated">Updated {fmtTs(updatedTs)}</span>
     </div>
   {/if}
 </div>
+
+{#if pendingDelete}
+  <ConfirmModal
+    title="Delete {pendingDelete.kind}"
+    message={`Delete "${pendingDelete.name}"? This cannot be undone.`}
+    confirmLabel="Delete"
+    danger={true}
+    on:confirm={doRemove}
+    on:cancel={cancelRemove}
+  />
+{/if}
 
 <style>
   .detail {

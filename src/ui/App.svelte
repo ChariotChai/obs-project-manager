@@ -1,9 +1,6 @@
 <script lang="ts">
   import type PmStore from "../store";
   import Sidebar from "./Sidebar.svelte";
-  import Overview from "./Overview.svelte";
-  import Timeline from "./Timeline.svelte";
-  import Board from "./Board.svelte";
   import Requirements from "./Requirements.svelte";
   import DetailPanel from "./DetailPanel.svelte";
   import EditorModal from "./EditorModal.svelte";
@@ -37,7 +34,7 @@
     return false;
   })();
 
-  // Active board object (for query-type boards that need their config).
+  // Active board object (all boards are query-based now).
   $: activeBoard = $boards.find((b) => b.id === $activeBoardId) ?? null;
 
   function switchSolution(e: Event) {
@@ -93,12 +90,6 @@
             <div class="detail-wrap">
               <DetailPanel {store} />
             </div>
-          {:else if $tab === "overview"}
-            <Overview {store} />
-          {:else if $tab === "timeline"}
-            <Timeline {store} />
-          {:else if $tab === "board"}
-            <Board {store} />
           {:else if $tab === "query" && activeBoard}
             <QueryView {store} board={activeBoard} />
           {:else if $tab === "requirements"}
@@ -229,9 +220,6 @@
     min-height: 0;
     overflow: hidden;
   }
-  .content :global(.overview),
-  .content :global(.timeline),
-  .content :global(.board),
   .content :global(.req),
   .content :global(.qview) {
     height: 100%;
