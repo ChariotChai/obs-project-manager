@@ -1,0 +1,81 @@
+/* Project Manager — Apple-inspired theme.
+   White-first, clean, with a single blue accent. Adapts to Obsidian dark theme. */
+
+.pm-root {
+  height: 100%;
+}
+
+:root {
+  --pm-bg: #f5f5f7;
+  --pm-surface: #ffffff;
+  --pm-sidebar: #fbfbfd;
+  --pm-text: #1d1d1f;
+  --pm-muted: #8e8e93;
+  --pm-border: rgba(0, 0, 0, 0.08);
+  --pm-accent: #007aff;
+  --pm-hover: rgba(0, 0, 0, 0.04);
+  --pm-input: #ffffff;
+  --pm-col: rgba(0, 0, 0, 0.04);
+  --pm-track: rgba(0, 0, 0, 0.07);
+}
+
+.theme-dark {
+  --pm-bg: #161617;
+  --pm-surface: #1c1c1e;
+  --pm-sidebar: #161617;
+  --pm-text: #f2f2f7;
+  --pm-muted: #98989f;
+  --pm-border: rgba(255, 255, 255, 0.1);
+  --pm-accent: #0a84ff;
+  --pm-hover: rgba(255, 255, 255, 0.06);
+  --pm-input: #2c2c2e;
+  --pm-col: rgba(255, 255, 255, 0.07);
+  --pm-track: rgba(255, 255, 255, 0.12);
+}
+
+.pm-root .pm-app {
+  height: 100%;
+}
+
+/* Thin, macOS-like scrollbars. */
+.pm-root ::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+.pm-root ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.pm-root ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.3);
+  background-clip: content-box;
+}
+.theme-dark .pm-root ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  background-clip: content-box;
+}
+
+.pm-root * {
+  box-sizing: border-box;
+}
+.pm-root button,
+.pm-root input,
+.pm-root textarea,
+.pm-root select {
+  font-family: inherit;
+}
+
+.pm-root select {
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path fill='%238e8e93' d='M5 7L1 3h8z'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  padding-right: 24px !important;
+}
+
+.pm-root .pm-overlay {
+  position: absolute;
+}
