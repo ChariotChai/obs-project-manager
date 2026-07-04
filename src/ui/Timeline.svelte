@@ -26,6 +26,7 @@
   $: rows = buildRows();
 
   function buildRows(): Row[] {
+    if (!$model) return [];
     const out: Row[] = [];
     for (const p of $model.projects) {
       out.push({ kind: "project", id: p.id, name: p.name, start: p.startDate, end: p.endDate, color: p.color, status: p.status, depth: 0, owner: p.owner });
