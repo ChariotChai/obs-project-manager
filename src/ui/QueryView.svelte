@@ -7,6 +7,7 @@
   import StatusDot from "./components/StatusDot.svelte";
   import Avatar from "./components/Avatar.svelte";
   import ConfirmModal from "./components/ConfirmModal.svelte";
+  import WidgetEditorModal from "./components/WidgetEditorModal.svelte";
   import {
     priorityLabel,
     PRIORITY_COLORS,
@@ -116,33 +117,15 @@
     draftError = null;
   }
 
-  function saveWidget() {
-    if (!draft) return;
-    const parsed = parseQuery(draft.queryText);
-    if (parsed.error) {
-      draftError = `Line ${parsed.error.line}: ${parsed.error.message}`;
-      return;
-    }
-    // If view is a chart that needs grouping and groupBy is empty, default it.
-    let groupBy = draft.groupBy.trim();
-    if (!groupBy && (draft.view === "pie" || draft.view === "donut" || draft.view === "bar" || draft.view === "kanban")) {
-      groupBy = parsed.spec?.groupBy ?? (parsed.spec?.from === "task" ? "status" : "status");
-    }
-    const payload = {
-      title: draft.title.trim() || "Untitled",
-      queryText: draft.queryText,
-      view: draft.view,
-      size: draft.size,
-      groupBy: groupBy || undefined,
-    };
-    if (editingId === "new") {
+  function handleWidgetSave(event: CustomEvent<{ editingId: string | null; payload: any }>) {
+    const { editingId: id, payload } = event.detail;
+    if (id === "new") {
       store.addWidget(board.id, payload);
-    } else if (editingId) {
-      store.updateWidget(board.id, editingId, payload);
+    } else if (id) {
+      store.updateWidget(board.id, id, payload);
     }
     editingId = null;
     draft = null;
-    draftError = null;
   }
 
   function askRemoveWidget(w: DashboardWidget) {
@@ -640,62 +623,6 @@
     </div>
   </div>
 
-  {#if editingId !== null && draft}
-    <div class="editor">
-      <div class="editor-top">
-        <span class="editor-title">{editingId === "new" ? "Add widget" : "Edit widget"}</span>
-      </div>
-      <div class="form-row">
-        <label class="field">
-          <span class="lbl">Title</span>
-          <input type="text" bind:value={draft.title} placeholder="Widget title" />
-        </label>
-        <label class="field size-field">
-          <span class="lbl">Size</span>
-          <select bind:value={draft.size}>
-            {#each SIZES as s}
-              <option value={s.value}>{s.label} ({s.span}/4)</option>
-            {/each}
-          </select>
-        </label>
-      </div>
-      <label class="field">
-        <span class="lbl">Query</span>
-        <textarea bind:value={draft.queryText} rows="6" spellcheck="false" placeholder={SAMPLE_QUERY}></textarea>
-      </label>
-      {#if draftError}
-        <p class="err">{draftError}</p>
-      {/if}
-      <div class="form-row">
-        <label class="field">
-          <span class="lbl">View</span>
-          <select bind:value={draft.view}>
-            {#each VIEWS as v}
-              <option value={v.value}>{v.label} — {v.hint}</option>
-            {/each}
-          </select>
-        </label>
-        <label class="field">
-          <span class="lbl">Group by (optional)</span>
-          <input type="text" bind:value={draft.groupBy} placeholder="status, priority, owner, …" list="groupByHints" />
-          <datalist id="groupByHints">
-            {#each groupByHints(parseQuery(draft.queryText).spec) as h}
-              <option value={h}></option>
-            {/each}
-          </datalist>
-        </label>
-      </div>
-      <div class="hint">
-        <p>Clauses: <code>FROM</code> task|target|project|requirement · <code>WHERE</code> field op value (AND …) · <code>GROUP BY</code> field · <code>SORT</code> field ASC|DESC · <code>VIEW</code> … · <code>LIMIT</code> n</p>
-        <p>Operators: <code>=</code> <code>!=</code> <code>&gt;</code> <code>&lt;</code> <code>&gt;=</code> <code>&lt;=</code> <code>contains</code> <code>starts</code></p>
-      </div>
-      <div class="editor-foot">
-        <button class="ghost-btn" on:click={cancelEdit}>Cancel</button>
-        <button class="primary-btn" on:click={saveWidget}>{editingId === "new" ? "Add" : "Save"}</button>
-      </div>
-    </div>
-  {/if}
-
   {#if widgets.length === 0 && editingId === null}
     <div class="empty-board">
       <p>No widgets yet.</p>
@@ -966,6 +893,15 @@
   />
 {/if}
 
+{#if editingId !== null && draft}
+  <WidgetEditorModal
+    {editingId}
+    {draft}
+    on:cancel={cancelEdit}
+    on:save={handleWidgetSave}
+  />
+{/if}
+
 <style>
   .qview {
     height: 100%;
@@ -1018,113 +954,6 @@
     background: var(--pm-hover, rgba(0, 0, 0, 0.04));
   }
   .ghost-btn.primary:hover {
-    background: #006fe8;
-  }
-
-  /* ---- Editor ---- */
-  .editor {
-    margin: 0 22px 12px;
-    padding: 14px;
-    background: var(--pm-surface, #fff);
-    border: 1px solid var(--pm-border, rgba(0, 0, 0, 0.1));
-    border-radius: 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    flex-shrink: 0;
-  }
-  .editor-top {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-  .editor-title {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--pm-text, #1d1d1f);
-  }
-  .form-row {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
-  }
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    font-size: 12px;
-  }
-  .field .lbl {
-    color: var(--pm-muted, #8e8e93);
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-    font-size: 10.5px;
-  }
-  .field input,
-  .field select,
-  .field textarea {
-    font: inherit;
-    font-size: 12.5px;
-    padding: 8px 10px;
-    border: 1px solid var(--pm-border, rgba(0, 0, 0, 0.1));
-    border-radius: 8px;
-    background: var(--pm-input, #fff);
-    color: var(--pm-text, #1d1d1f);
-    outline: none;
-    font-family: inherit;
-  }
-  .field textarea {
-    font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
-    font-size: 12px;
-    resize: vertical;
-    line-height: 1.5;
-  }
-  .field input:focus,
-  .field select:focus,
-  .field textarea:focus {
-    border-color: var(--pm-accent, #007aff);
-    box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.12);
-  }
-  .size-field {
-    max-width: 160px;
-  }
-  .hint {
-    font-size: 11.5px;
-    color: var(--pm-muted, #8e8e93);
-    line-height: 1.6;
-  }
-  .hint p {
-    margin: 0 0 2px;
-  }
-  .hint code {
-    background: var(--pm-col, rgba(0, 0, 0, 0.05));
-    padding: 1px 5px;
-    border-radius: 4px;
-    font-size: 11px;
-  }
-  .err {
-    color: #ff3b30;
-    font-size: 12px;
-    margin: 0;
-  }
-  .editor-foot {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-  }
-  .primary-btn {
-    background: var(--pm-accent, #007aff);
-    color: #fff;
-    border: none;
-    font: inherit;
-    font-size: 12px;
-    font-weight: 600;
-    padding: 6px 14px;
-    border-radius: 8px;
-    cursor: pointer;
-  }
-  .primary-btn:hover {
     background: #006fe8;
   }
 

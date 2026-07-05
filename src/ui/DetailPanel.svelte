@@ -144,6 +144,8 @@
   let rowOrder: string[] = [];
   let dragId: string | null = null;
   let hoveredId: string | null = null;
+  let dragMode: "reorder" | "dep" = "reorder";
+  let dropTargetId: string | null = null;
 
   // Targets for the currently-selected project (memoised for the graph).
   $: pTargetsForGraph = selectedProject ? projectTargets(selectedProject.id) : [];
@@ -252,20 +254,36 @@
     return arrows;
   })();
 
-  function onRowDragStart(e: DragEvent, id: string) {
+  function onRowDragStart(e: DragEvent, id: string, mode: "reorder" | "dep" = "reorder") {
     dragId = id;
+    dragMode = mode;
     e.dataTransfer?.setData("text/plain", id);
-    if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = mode === "dep" ? "link" : "move";
   }
   function onRowDragOver(e: DragEvent, id: string) {
     e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    if (e.dataTransfer) e.dataTransfer.dropEffect = dragMode === "dep" ? "link" : "move";
+    if (dragMode === "dep" && dragId !== id) {
+      dropTargetId = id;
+    } else {
+      dropTargetId = null;
+    }
+  }
+  function onRowDragLeave() {
+    dropTargetId = null;
   }
   function onRowDrop(e: DragEvent, id: string) {
     e.preventDefault();
     const from = dragId ?? e.dataTransfer?.getData("text/plain") ?? null;
     dragId = null;
-    if (from && from !== id) {
+    dropTargetId = null;
+    if (!from || from === id) return;
+    if (dragMode === "dep") {
+      const target = $model.targets.find((t) => t.id === id);
+      if (target && !target.dependencies.includes(from)) {
+        store.updateTarget(id, { dependencies: [...target.dependencies, from] });
+      }
+    } else {
       const fromIdx = rowOrder.indexOf(from);
       const toIdx = rowOrder.indexOf(id);
       if (fromIdx >= 0 && toIdx >= 0) {
@@ -473,13 +491,13 @@
                 <svg class="arrow-layer" style="left:{LABEL_W}px" width={ganttWidth} height={ganttHeight}>
                   <defs>
                     <marker id="gantt-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-                      <path d="M0,0 L8,4 L0,8 z" fill="var(--pm-muted, #8e8e93)" />
+                      <path d="M0,0 L8,4 L0,8 z" fill="#007AFF" />
                     </marker>
                   </defs>
                   {#each ganttArrows as a (a.key)}
-                    <path d="M {a.fromX},{a.fromY} C {a.fromX + 20},{a.fromY} {a.toX - 20},{a.toY} {a.toX},{a.toY}"
-                          fill="none" stroke="var(--pm-muted, #8e8e93)" stroke-width="1.5"
-                          marker-end="url(#gantt-arrow)" opacity="0.55" />
+                    <path d="M {a.fromX},{a.fromY} C {a.fromX + 30},{a.fromY} {a.toX - 30},{a.toY} {a.toX},{a.toY}"
+                          fill="none" stroke="#007AFF" stroke-width="2"
+                          marker-end="url(#gantt-arrow)" opacity="0.75" />
                   {/each}
                 </svg>
                 {#each rowOrder as tid, i (tid)}
@@ -490,19 +508,24 @@
                   {#if t && pos}
                     <div class="g-row" style="top:{i * ROW_H}px;height:{ROW_H}px"
                          draggable="true"
-                         on:dragstart={(e) => onRowDragStart(e, t.id)}
+                         on:dragstart={(e) => onRowDragStart(e, t.id, "reorder")}
                          on:dragover={(e) => onRowDragOver(e, t.id)}
+                         on:dragleave={onRowDragLeave}
                          on:drop={(e) => onRowDrop(e, t.id)}
                          class:dragging={dragId === t.id}
+                         class:drop-target={dropTargetId === t.id}
                     >
                       <div class="g-label" style="width:{LABEL_W}px" on:click={() => store.select("target", t.id)}>
                         <span class="g-drag" title="Drag to reorder">⠿</span>
+                        <span class="g-drag-dep" title="Drag to create dependency" draggable="true"
+                              on:dragstart={(e) => { e.stopPropagation(); onRowDragStart(e, t.id, "dep"); }}>◈</span>
                         <span class="g-dot" style="background:{STATUS_COLORS[t.status] ?? '#8E8E93'}"></span>
                         <span class="g-name" class:active={isActive}>{t.name}</span>
                       </div>
                       <div class="g-bar" style="left:{LABEL_W + pos.x}px;width:{pos.width}px"
                            class:active={isActive}
                            class:hovering={hoveredId === t.id}
+                           class:drop-target={dropTargetId === t.id}
                            on:click={() => store.select("target", t.id)}
                            on:mouseenter={() => (hoveredId = t.id)}
                            on:mouseleave={() => (hoveredId = null)}
@@ -1084,6 +1107,25 @@
   }
   .g-label:hover .g-drag {
     opacity: 0.9;
+  }
+  .g-drag-dep {
+    color: #007AFF;
+    font-size: 10px;
+    cursor: grab;
+    flex-shrink: 0;
+    line-height: 1;
+    opacity: 0.3;
+    transition: opacity 0.15s;
+  }
+  .g-label:hover .g-drag-dep {
+    opacity: 0.8;
+  }
+  .g-row.drop-target {
+    background: rgba(0, 122, 255, 0.05);
+  }
+  .g-bar.drop-target {
+    outline: 2px dashed #007AFF;
+    outline-offset: 2px;
   }
   .g-dot {
     width: 7px;
