@@ -2,12 +2,21 @@
   import type PmStore from "../store";
   import type { BoardItem, DashboardWidget, WidgetView, WidgetSize } from "../store";
   import { parseQuery, runQuery, groupRows, fieldValue, SAMPLE_QUERY, FIELD_HINTS, entityKindOf } from "../query";
-  import type { QuerySpec } from "../query";
-  import type { AnyEntity, Priority } from "../types";
+  import type { QuerySpec, QueryEntity, QueryGroup } from "../query";
+  import type { AnyEntity, Priority, ProjectStatus, TargetStatus, TaskStatus, RequirementStatus } from "../types";
   import StatusDot from "./components/StatusDot.svelte";
   import Avatar from "./components/Avatar.svelte";
   import ConfirmModal from "./components/ConfirmModal.svelte";
-  import { priorityLabel, PRIORITY_COLORS, STATUS_COLORS } from "../constants";
+  import {
+    priorityLabel,
+    PRIORITY_COLORS,
+    STATUS_COLORS,
+    TASK_STATUSES,
+    TARGET_STATUSES,
+    PROJECT_STATUSES,
+    REQUIREMENT_STATUSES,
+    PRIORITIES,
+  } from "../constants";
 
   export let store: PmStore;
   export let board: BoardItem;
@@ -150,12 +159,27 @@
   }
 
   // ---- Drag-and-drop widget reordering ----
-  // We track the index of the widget currently being dragged and the index of
-  // the widget it's hovering over (for the drop indicator).
+  // The card is draggable ONLY while "armed" by a mousedown on its drag
+  // handle. This keeps inner widgets (e.g. kanban cards) free to host their
+  // own drag interactions without the whole widget hijacking the gesture.
+  let armedDragId: string | null = null;
   let dragFromIndex: number | null = null;
   let dragOverIndex: number | null = null;
 
-  function onWidgetDragStart(e: DragEvent, index: number) {
+  function onHandleMouseDown(w: DashboardWidget) {
+    armedDragId = w.id;
+  }
+  function onHandleMouseUp() {
+    armedDragId = null;
+  }
+  function onGlobalMouseUp() {
+    armedDragId = null;
+  }
+
+  function onWidgetDragStart(e: DragEvent, index: number, w: DashboardWidget) {
+    // Ignore dragstart events that bubbled up from a draggable child (kanban
+    // cards); those are handled by their own handlers below.
+    if (armedDragId !== w.id) return;
     dragFromIndex = index;
     if (e.dataTransfer) {
       e.dataTransfer.effectAllowed = "move";
@@ -183,6 +207,103 @@
   function onWidgetDragEnd() {
     dragFromIndex = null;
     dragOverIndex = null;
+    armedDragId = null;
+  }
+
+  // ---- Kanban card drag-and-drop (between columns) ----
+  // Dragging a card onto another column updates the entity's grouped field
+  // (status by default, also supports priority) and persists the change.
+  let kanbanDragId: string | null = null;
+  let kanbanDropKey: string | null = null;
+
+  function onKanbanCardDragStart(e: DragEvent, r: AnyEntity) {
+    kanbanDragId = r.id;
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", r.id);
+    }
+  }
+
+  function onKanbanCardDragEnd() {
+    kanbanDragId = null;
+    kanbanDropKey = null;
+  }
+
+  function onKanbanColDragOver(e: DragEvent, key: string) {
+    if (kanbanDragId === null) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    kanbanDropKey = key;
+  }
+
+  function onKanbanColDragLeave(e: DragEvent, key: string) {
+    const related = e.relatedTarget as HTMLElement | null;
+    const col = e.currentTarget as HTMLElement;
+    if (!related || !col.contains(related)) {
+      if (kanbanDropKey === key) kanbanDropKey = null;
+    }
+  }
+
+  async function onKanbanColDrop(e: DragEvent, from: QueryEntity | undefined, field: string, key: string) {
+    e.preventDefault();
+    e.stopPropagation();
+    const id = kanbanDragId;
+    kanbanDragId = null;
+    kanbanDropKey = null;
+    if (!id || !key || key === "—") return;
+    await updateEntityField(from, id, field, key);
+  }
+
+  /** Update an entity's grouped field. Only status & priority are supported
+   *  (the meaningful draggable groupings). */
+  async function updateEntityField(from: QueryEntity | undefined, id: string, field: string, value: string) {
+    if (!from) return;
+    if (field !== "status" && field !== "priority") return;
+    try {
+      if (from === "task") {
+        if (field === "status") await store.updateTask(id, { status: value as TaskStatus });
+        else await store.updateTask(id, { priority: value as Priority });
+      } else if (from === "target") {
+        if (field === "status") await store.updateTarget(id, { status: value as TargetStatus });
+      } else if (from === "project") {
+        if (field === "status") await store.updateProject(id, { status: value as ProjectStatus });
+      } else if (from === "requirement") {
+        if (field === "status") await store.updateRequirement(id, { status: value as RequirementStatus });
+      }
+    } catch (err) {
+      console.error("kanban drop update failed", err);
+    }
+  }
+
+  /** Build the full set of kanban columns (including empty ones) so the board
+   *  always shows every configured status / priority, Jira-style. */
+  function kanbanColumns(from: QueryEntity | undefined, field: string, groups: QueryGroup[]): QueryGroup[] {
+    let keys: string[] = [];
+    if (field === "status") {
+      keys =
+        from === "task"
+          ? [...TASK_STATUSES]
+          : from === "target"
+          ? [...TARGET_STATUSES]
+          : from === "project"
+          ? [...PROJECT_STATUSES]
+          : from === "requirement"
+          ? [...REQUIREMENT_STATUSES]
+          : [];
+    } else if (field === "priority") {
+      keys = [...PRIORITIES];
+    }
+    if (keys.length === 0) return groups;
+    const map = new Map(groups.map((g) => [g.key, g]));
+    const result: QueryGroup[] = [];
+    for (const k of keys) {
+      result.push(map.has(k) ? map.get(k)! : { key: k, rows: [] });
+    }
+    // Append any unexpected keys (e.g. "—") at the end.
+    for (const g of groups) {
+      if (!keys.includes(g.key)) result.push(g);
+    }
+    return result;
   }
 
   // ---- Selection handling ----
@@ -213,6 +334,9 @@
   }
   function entOwner(r: AnyEntity): string {
     return (r as any).owner ?? "";
+  }
+  function entDueDate(r: AnyEntity): string {
+    return (r as any).dueDate ?? "";
   }
   function entPriority(r: AnyEntity): Priority | undefined {
     return (r as any).priority;
@@ -331,10 +455,12 @@
     return FIELD_HINTS[spec.from];
   }
 
-  // ---- Timeline view data ----
-  // Each row becomes a horizontal bar positioned by its start/end dates.
-  const DAY_PX = 24;
-  const ROW_H = 32;
+  // ---- Timeline view data (Jira plan-style) ----
+  // A sticky left "name" column + a horizontally scrollable track with month
+  // gridlines, a today indicator, and bars coloured by status with a progress
+  // fill. Clicking a bar (or its name) selects the entity.
+  const DAY_PX = 26;
+  const LEFT_W = 200;
 
   type TimelineRow = {
     id: string;
@@ -343,6 +469,8 @@
     end: number | null;
     color: string;
     status: string;
+    progress: number;
+    cancelled: boolean;
   };
 
   function toTime(d: string): number {
@@ -361,6 +489,36 @@
     return d.getTime();
   }
 
+  /** Status-derived progress when no child tasks are available. */
+  function statusProgress(status: string): number {
+    if (status === "done" || status === "completed" || status === "triaged") return 100;
+    if (status === "cancelled") return 100;
+    if (status === "in-progress" || status === "active") return 60;
+    if (status === "blocked") return 25;
+    if (status === "on-hold") return 15;
+    if (status === "held") return 0;
+    return 0; // todo, planning, pool
+  }
+
+  /** Compute progress % from child tasks for projects/targets; fall back to a
+   *  status-based estimate for leaves. */
+  function entityProgress(r: AnyEntity): number {
+    if (r.kind === "target") {
+      const tasks = $model.tasks.filter((t) => t.targetId === r.id);
+      if (tasks.length) {
+        const done = tasks.filter((t) => t.status === "done").length;
+        return Math.round((done / tasks.length) * 100);
+      }
+    } else if (r.kind === "project") {
+      const tasks = $model.tasks.filter((t) => t.projectId === r.id);
+      if (tasks.length) {
+        const done = tasks.filter((t) => t.status === "done").length;
+        return Math.round((done / tasks.length) * 100);
+      }
+    }
+    return statusProgress(entStatus(r));
+  }
+
   function timelineData(rows: AnyEntity[]): {
     items: TimelineRow[];
     min: number;
@@ -368,19 +526,30 @@
     days: number;
     width: number;
     months: { label: string; left: number; width: number }[];
+    weeks: { left: number }[];
     todayLeft: number;
   } {
     const items: TimelineRow[] = rows.map((r) => {
       const sd = entStartDate(r);
       const ed = entEndDate(r);
+      const status = entStatus(r);
       return {
         id: r.id,
         name: entName(r),
         start: sd ? toTime(sd) : null,
         end: ed ? toTime(ed) : null,
-        color: entProjectColor(r),
-        status: entStatus(r),
+        color: STATUS_COLORS[status] ?? entProjectColor(r),
+        status,
+        progress: entityProgress(r),
+        cancelled: status === "cancelled",
       };
+    });
+    // Sort items by start date (unknown starts last) for a stable, scannable
+    // chart, like Jira's timeline.
+    items.sort((a, b) => {
+      const sa = a.start ?? Infinity;
+      const sb = b.start ?? Infinity;
+      return sa - sb;
     });
     let min = Infinity;
     let max = -Infinity;
@@ -399,6 +568,7 @@
     const width = days * DAY_PX;
 
     const months: { label: string; left: number; width: number }[] = [];
+    const weeks: { left: number }[] = [];
     let cursor = min;
     while (cursor < max) {
       const d = new Date(cursor);
@@ -413,18 +583,53 @@
       });
       cursor = next;
     }
+    // Weekly gridlines starting from the first Monday on/after min.
+    {
+      const first = new Date(min);
+      const dow = first.getDay(); // 0=Sun..6=Sat
+      const offset = (8 - dow) % 7; // days until next Monday
+      let w = min + offset * 86400000;
+      while (w < max) {
+        weeks.push({ left: ((w - min) / 86400000) * DAY_PX });
+        w += 7 * 86400000;
+      }
+    }
     const todayLeft = ((floorToDay(Date.now()) - min) / 86400000) * DAY_PX;
-    return { items, min, max, days, width, months, todayLeft };
+    return { items, min, max, days, width, months, weeks, todayLeft };
   }
 
-  function tlBarStyle(it: TimelineRow, min: number): string {
-    const s = it.start !== null && Number.isFinite(it.start) ? it.start : it.end !== null ? it.end - 86400000 : min;
-    const e = it.end !== null && Number.isFinite(it.end) ? it.end : it.start !== null ? it.start + 86400000 : min + 86400000;
-    const left = ((s - min) / 86400000) * DAY_PX;
-    const width = Math.max(DAY_PX, ((e - s) / 86400000) * DAY_PX);
-    return `left:${left}px;width:${width}px`;
+  function tlBarLeft(it: TimelineRow, min: number): number {
+    const s =
+      it.start !== null && Number.isFinite(it.start)
+        ? it.start
+        : it.end !== null && Number.isFinite(it.end)
+        ? it.end - 86400000
+        : min;
+    return Math.max(0, ((s - min) / 86400000) * DAY_PX);
+  }
+  function tlBarWidth(it: TimelineRow, min: number): number {
+    const s =
+      it.start !== null && Number.isFinite(it.start)
+        ? it.start
+        : it.end !== null && Number.isFinite(it.end)
+        ? it.end - 86400000
+        : min;
+    const e =
+      it.end !== null && Number.isFinite(it.end)
+        ? it.end
+        : it.start !== null && Number.isFinite(it.start)
+        ? it.start + 86400000
+        : min + 86400000;
+    return Math.max(DAY_PX * 0.6, ((e - s) / 86400000) * DAY_PX);
+  }
+  function fmtDate(t: number | null): string {
+    if (t === null || !Number.isFinite(t)) return "";
+    const d = new Date(t);
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
   }
 </script>
+
+<svelte:window on:mouseup={onGlobalMouseUp} />
 
 <div class="qview">
   <div class="qv-head">
@@ -505,14 +710,19 @@
           style="--span:{sizeSpan(w.size)}"
           class:dragging={dragFromIndex === i}
           class:drop-target={dragOverIndex === i && dragFromIndex !== null && dragFromIndex !== i}
-          draggable="true"
-          on:dragstart={(e) => onWidgetDragStart(e, i)}
+          draggable={armedDragId === w.id}
+          on:dragstart={(e) => onWidgetDragStart(e, i, w)}
           on:dragover={(e) => onWidgetDragOver(e, i)}
           on:drop={(e) => onWidgetDrop(e, i)}
           on:dragend={onWidgetDragEnd}
         >
           <header class="card-head">
-            <span class="drag-handle" title="Drag to reorder">⠿</span>
+            <span
+              class="drag-handle"
+              title="Drag to reorder"
+              on:mousedown={() => onHandleMouseDown(w)}
+              on:mouseup={onHandleMouseUp}
+            >⠿</span>
             <span class="card-title">{w.title}</span>
             <span class="card-badge">{viewLabel(w.view)}</span>
             <div class="card-tools">
@@ -567,27 +777,52 @@
                   {/each}
                 </div>
               {:else if w.view === "kanban"}
+                {@const kbField = w.groupBy || res.spec?.groupBy || "status"}
+                {@const cols = kanbanColumns(res.spec?.from, kbField, res.groups)}
                 <div class="kanban">
-                  {#each res.groups as g (g.key)}
-                    <div class="kb-col">
+                  {#each cols as g, gi (g.key)}
+                    <div
+                      class="kb-col"
+                      class:kb-drop={kanbanDropKey === g.key}
+                      on:dragover={(e) => onKanbanColDragOver(e, g.key)}
+                      on:dragleave={(e) => onKanbanColDragLeave(e, g.key)}
+                      on:drop={(e) => onKanbanColDrop(e, res.spec?.from, kbField, g.key)}
+                    >
                       <div class="kb-head">
-                        <span class="dot" style="background:{groupColor(g.key, res.groups.indexOf(g))}"></span>
+                        <span class="dot" style="background:{groupColor(g.key, gi)}"></span>
                         <span class="kb-label">{g.key}</span>
                         <span class="count">{g.rows.length}</span>
                       </div>
                       <div class="kb-body">
                         {#each g.rows as r (r.id)}
-                          <button class="kb-card" on:click={() => sel(res.spec, r)} class:active={$selection.id === r.id}>
-                            <div class="kc-name">{entName(r)}</div>
-                            {#if entPriority(r)}
-                              <span class="prio" style="--c:{entPriorityColor(r)}">{entPriorityLabel(r)}</span>
-                            {/if}
+                          <div
+                            class="kb-card"
+                            class:active={$selection.id === r.id}
+                            class:kb-dragging={kanbanDragId === r.id}
+                            draggable="true"
+                            on:dragstart={(e) => onKanbanCardDragStart(e, r)}
+                            on:dragend={onKanbanCardDragEnd}
+                            on:click={() => sel(res.spec, r)}
+                            role="button"
+                          >
+                            <div class="kc-top">
+                              <StatusDot status={entStatus(r)} size={8} />
+                              <span class="kc-name">{entName(r)}</span>
+                            </div>
+                            <div class="kc-meta">
+                              {#if entPriority(r)}
+                                <span class="kc-prio" style="--c:{entPriorityColor(r)}">{entPriorityLabel(r)}</span>
+                              {/if}
+                              {#if entDueDate(r)}
+                                <span class="kc-due" title="Due date">{entDueDate(r)}</span>
+                              {/if}
+                            </div>
                             {#if entOwner(r)}
                               <div class="kc-foot"><Avatar name={entOwner(r)} size={18} /></div>
                             {/if}
-                          </button>
+                          </div>
                         {:else}
-                          <div class="kb-empty">No items</div>
+                          <div class="kb-empty">Drop here</div>
                         {/each}
                       </div>
                     </div>
@@ -659,25 +894,52 @@
                 </div>
               {:else if w.view === "timeline"}
                 {@const tl = timelineData(res.rows)}
-                <div class="tl-widget">
-                  <div class="tlw-scroll">
-                    <div class="tlw-inner" style="width:{tl.width}px">
-                      <div class="tlw-months">
+                <div class="tl">
+                  <div class="tl-scroll">
+                    <div class="tl-canvas" style="width:{LEFT_W + tl.width}px">
+                      <!-- Header (sticky top). Corner sticks both top & left. -->
+                      <div class="tl-head">
+                        <div class="tl-corner">Item</div>
+                        <div class="tl-axis" style="width:{tl.width}px">
+                          {#each tl.months as m}
+                            <div class="tl-month" style="left:{m.left}px;width:{m.width}px">{m.label}</div>
+                          {/each}
+                        </div>
+                      </div>
+                      <!-- Today line spans the full canvas height (under names). -->
+                      <div class="tl-today" style="left:{LEFT_W + tl.todayLeft}px"></div>
+                      <!-- Vertical gridlines (weeks + month boundaries) behind rows. -->
+                      <div class="tl-grid" style="left:{LEFT_W}px;width:{tl.width}px">
+                        {#each tl.weeks as wk}
+                          <div class="tl-weekline" style="left:{wk.left}px"></div>
+                        {/each}
                         {#each tl.months as m}
-                          <div class="tlw-month" style="left:{m.left}px;width:{m.width}px">{m.label}</div>
+                          <div class="tl-monthline" style="left:{m.left}px"></div>
                         {/each}
                       </div>
-                      <div class="tlw-today" style="left:{tl.todayLeft}px"></div>
-                      <div class="tlw-rows" style="height:{tl.items.length * ROW_H}px">
+                      <!-- Rows -->
+                      <div class="tl-rows">
                         {#each tl.items as it, idx (it.id)}
                           <div
-                            class="tlw-row"
-                            style="top:{idx * ROW_H}px;height:{ROW_H}px"
+                            class="tl-row"
+                            class:alt={idx % 2 === 1}
                             on:click={() => selById(res.spec, it.id)}
                             role="button"
                           >
-                            <div class="tlw-bar" style="{tlBarStyle(it, tl.min)}; --c:{it.color}">
-                              <span class="tlw-name">{it.name}</span>
+                            <div class="tl-name" style="width:{LEFT_W}px">
+                              <StatusDot status={it.status} size={7} />
+                              <span class="tl-name-text" title={it.name}>{it.name}</span>
+                            </div>
+                            <div class="tl-track" style="width:{tl.width}px">
+                              <div
+                                class="tl-bar"
+                                class:cancelled={it.cancelled}
+                                style="left:{tlBarLeft(it, tl.min)}px;width:{tlBarWidth(it, tl.min)}px;background:{it.color}"
+                                title="{it.name} · {fmtDate(it.start)} – {fmtDate(it.end)} · {it.progress}% done"
+                              >
+                                <div class="tl-bar-fill" style="width:{it.progress}%"></div>
+                                <span class="tl-bar-label">{it.name}</span>
+                              </div>
                             </div>
                           </div>
                         {/each}
@@ -1078,27 +1340,35 @@
     overflow-x: auto;
     align-items: stretch;
     min-height: 0;
+    padding-bottom: 4px;
   }
   .kb-col {
-    flex: 0 0 180px;
+    flex: 0 0 190px;
     background: var(--pm-col, rgba(0, 0, 0, 0.025));
-    border-radius: 9px;
+    border: 1px solid transparent;
+    border-radius: 10px;
     display: flex;
     flex-direction: column;
     min-height: 0;
+    transition: background 0.12s, border-color 0.12s;
+  }
+  .kb-col.kb-drop {
+    border-color: var(--pm-accent, #007aff);
+    background: color-mix(in srgb, var(--pm-accent, #007aff) 8%, transparent);
   }
   .kb-head {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 8px 10px;
+    padding: 9px 10px 6px;
     font-size: 11.5px;
     font-weight: 600;
     color: var(--pm-text, #1d1d1f);
+    text-transform: capitalize;
   }
   .kb-head .dot {
-    width: 7px;
-    height: 7px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     flex-shrink: 0;
   }
@@ -1114,6 +1384,7 @@
     background: var(--pm-surface, #fff);
     padding: 1px 6px;
     border-radius: 999px;
+    font-variant-numeric: tabular-nums;
   }
   .kb-body {
     flex: 1;
@@ -1122,33 +1393,58 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
+    min-height: 60px;
   }
   .kb-card {
     background: var(--pm-surface, #fff);
     border: 1px solid var(--pm-border, rgba(0, 0, 0, 0.07));
     border-radius: 9px;
     padding: 8px 10px;
-    cursor: pointer;
+    cursor: grab;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
     text-align: left;
     flex: 0 0 auto;
+    user-select: none;
   }
   .kb-card:hover {
     box-shadow: 0 3px 10px rgba(0, 0, 0, 0.08);
+  }
+  .kb-card:active {
+    cursor: grabbing;
   }
   .kb-card.active {
     border-color: var(--pm-accent, #007aff);
     box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.15);
   }
+  .kb-card.kb-dragging {
+    opacity: 0.4;
+    transform: rotate(1.5deg);
+  }
+  .kc-top {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
   .kc-name {
+    flex: 1;
     font-size: 12px;
     font-weight: 600;
     color: var(--pm-text, #1d1d1f);
     line-height: 1.3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
-  .prio {
+  .kc-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 5px;
+    flex-wrap: wrap;
+  }
+  .kc-prio {
     display: inline-block;
-    margin-top: 4px;
     font-size: 9.5px;
     font-weight: 600;
     color: var(--c);
@@ -1156,8 +1452,14 @@
     border-radius: 999px;
     background: color-mix(in srgb, var(--c) 14%, transparent);
   }
+  .kc-due {
+    font-size: 10px;
+    color: var(--pm-muted, #8e8e93);
+    font-variant-numeric: tabular-nums;
+    margin-left: auto;
+  }
   .kc-foot {
-    margin-top: 5px;
+    margin-top: 6px;
     display: flex;
     justify-content: flex-end;
   }
@@ -1165,9 +1467,13 @@
     text-align: center;
     color: var(--pm-muted, #8e8e93);
     font-size: 10.5px;
-    padding: 12px 6px;
+    padding: 14px 6px;
     border: 1.5px dashed var(--pm-border, rgba(0, 0, 0, 0.1));
     border-radius: 8px;
+  }
+  .kb-col.kb-drop .kb-empty {
+    border-color: var(--pm-accent, #007aff);
+    color: var(--pm-accent, #007aff);
   }
 
   /* ---- Pie / donut ---- */
@@ -1376,38 +1682,63 @@
     background: color-mix(in srgb, var(--pm-accent, #007aff) 6%, var(--pm-surface, #fff));
   }
 
-  /* ---- Timeline widget ---- */
-  .tl-widget {
+  /* ---- Timeline widget (Jira plan-style) ---- */
+  .tl {
     flex: 1;
     min-height: 0;
     display: flex;
     flex-direction: column;
   }
-  .tlw-scroll {
+  .tl-scroll {
     flex: 1;
     overflow: auto;
     border: 1px solid var(--pm-border, rgba(0, 0, 0, 0.06));
     border-radius: 9px;
     background: var(--pm-col, rgba(0, 0, 0, 0.015));
     min-height: 0;
-  }
-  .tlw-inner {
     position: relative;
-    min-height: 100%;
   }
-  .tlw-months {
+  .tl-canvas {
+    position: relative;
+    min-width: 100%;
+  }
+  /* Header: sticky top; corner also sticky left. */
+  .tl-head {
     position: sticky;
     top: 0;
-    z-index: 2;
-    height: 26px;
+    z-index: 5;
+    height: 30px;
+    display: flex;
+    align-items: stretch;
     background: var(--pm-surface, #fff);
-    border-bottom: 1px solid var(--pm-border, rgba(0, 0, 0, 0.08));
+    border-bottom: 1px solid var(--pm-border, rgba(0, 0, 0, 0.12));
   }
-  .tlw-month {
+  .tl-corner {
+    position: sticky;
+    left: 0;
+    z-index: 6;
+    width: 200px;
+    flex: 0 0 200px;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--pm-muted, #8e8e93);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    background: var(--pm-surface, #fff);
+    border-right: 1px solid var(--pm-border, rgba(0, 0, 0, 0.12));
+  }
+  .tl-axis {
+    position: relative;
+    flex: 0 0 auto;
+  }
+  .tl-month {
     position: absolute;
     top: 0;
-    height: 26px;
-    padding: 6px 8px 0;
+    height: 30px;
+    padding: 8px 8px 0;
     font-size: 10.5px;
     font-weight: 600;
     color: var(--pm-muted, #8e8e93);
@@ -1415,54 +1746,133 @@
     letter-spacing: 0.4px;
     white-space: nowrap;
     overflow: hidden;
-    border-right: 1px solid var(--pm-border, rgba(0, 0, 0, 0.06));
+    border-right: 1px solid var(--pm-border, rgba(0, 0, 0, 0.08));
   }
-  .tlw-today {
+  /* Today indicator: vertical red line over the whole canvas. */
+  .tl-today {
     position: absolute;
-    top: 26px;
+    top: 0;
     bottom: 0;
     width: 2px;
     background: #ff3b30;
-    opacity: 0.5;
-    z-index: 1;
+    opacity: 0.55;
+    z-index: 3;
     pointer-events: none;
   }
-  .tlw-rows {
+  /* Vertical gridlines (weeks faint, months stronger) behind rows. */
+  .tl-grid {
+    position: absolute;
+    top: 30px;
+    bottom: 0;
+    z-index: 0;
+    pointer-events: none;
+  }
+  .tl-weekline {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--pm-border, rgba(0, 0, 0, 0.04));
+  }
+  .tl-monthline {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--pm-border, rgba(0, 0, 0, 0.1));
+  }
+  .tl-rows {
     position: relative;
-    margin-top: 0;
   }
-  .tlw-row {
-    position: absolute;
-    left: 0;
-    right: 0;
-    padding: 3px 0;
-    box-sizing: border-box;
+  .tl-row {
+    display: flex;
+    align-items: stretch;
+    height: 34px;
     cursor: pointer;
+    border-bottom: 1px solid var(--pm-border, rgba(0, 0, 0, 0.04));
   }
-  .tlw-row:hover {
-    background: var(--pm-hover, rgba(0, 0, 0, 0.03));
+  .tl-row.alt {
+    background: rgba(0, 0, 0, 0.018);
   }
-  .tlw-bar {
-    position: absolute;
+  .tl-row:hover {
+    background: var(--pm-hover, rgba(0, 122, 255, 0.05));
+  }
+  /* Sticky name column (left). */
+  .tl-name {
+    position: sticky;
     left: 0;
-    height: 22px;
+    z-index: 4;
+    flex: 0 0 200px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 10px;
+    background: var(--pm-surface, #fff);
+    border-right: 1px solid var(--pm-border, rgba(0, 0, 0, 0.12));
+  }
+  .tl-row.alt .tl-name {
+    background: var(--pm-col, rgba(0, 0, 0, 0.018));
+  }
+  .tl-row:hover .tl-name {
+    background: color-mix(in srgb, var(--pm-accent, #007aff) 6%, var(--pm-surface, #fff));
+  }
+  .tl-name-text {
+    flex: 1;
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--pm-text, #1d1d1f);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tl-track {
+    position: relative;
+    flex: 0 0 auto;
+  }
+  .tl-bar {
+    position: absolute;
+    top: 5px;
+    height: 24px;
     border-radius: 6px;
-    background: var(--c, #007aff);
     color: #fff;
-    padding: 3px 8px;
-    font-size: 11px;
+    padding: 4px 8px;
+    font-size: 10.5px;
     font-weight: 600;
     line-height: 16px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
     opacity: 0.92;
+    overflow: hidden;
   }
-  .tlw-bar:hover {
+  .tl-bar:hover {
     opacity: 1;
+    box-shadow: 0 3px 9px rgba(0, 0, 0, 0.2);
   }
-  .tlw-name {
+  .tl-bar.cancelled {
+    opacity: 0.5;
+    background: repeating-linear-gradient(
+      45deg,
+      var(--pm-muted, #8e8e93),
+      var(--pm-muted, #8e8e93) 5px,
+      rgba(255, 255, 255, 0.35) 5px,
+      rgba(255, 255, 255, 0.35) 10px
+    ) !important;
+  }
+  /* Progress fill (darker overlay on the left portion = done). */
+  .tl-bar-fill {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.28);
+    border-radius: 6px 0 0 6px;
+    pointer-events: none;
+  }
+  .tl-bar-label {
+    position: relative;
+    z-index: 1;
     pointer-events: none;
   }
 </style>
